@@ -13,7 +13,7 @@ settings:
   base:
     # Swift 5 language mode for now; revisit strict Swift 6 concurrency in a later milestone.
     SWIFT_VERSION: "5.0"
-    MARKETING_VERSION: "0.1.0"
+    MARKETING_VERSION: "1.0.0"
     CURRENT_PROJECT_VERSION: "1"
     CODE_SIGN_STYLE: Automatic
     # Ad-hoc sign so it runs/tests locally without a provisioning profile.
@@ -42,7 +42,7 @@ targets:
       path: Slacker/Info.plist
       properties:
         CFBundleDisplayName: Slacker
-        CFBundleShortVersionString: "0.1.0"
+        CFBundleShortVersionString: "1.0.0"
         LSMinimumSystemVersion: "14.0"
         # Keep a Dock icon + main window in M0; menu bar is added alongside it.
         LSUIElement: false
