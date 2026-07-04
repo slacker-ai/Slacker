@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  test:
+    name: Build and test
+    runs-on: macos-15
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Resolve Swift packages
+        run: xcodebuild -project Slacker.xcodeproj -scheme Slacker -resolvePackageDependencies
+
+      - name: Build
+        run: xcodebuild build -project Slacker.xcodeproj -scheme Slacker -destination 'platform=macOS'
+
+      - name: Test
+        run: xcodebuild test -project Slacker.xcodeproj -scheme Slacker -destination 'platform=macOS'

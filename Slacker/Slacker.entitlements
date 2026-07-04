@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	  App Sandbox is intentionally NOT enabled. Slacker is a local-first OSS dev tool
+	  distributed by notarized DMG (not the Mac App Store). The sandbox would block the
+	  CLI-subprocess LLM backends (Codex CLI, Claude Code) and their home-dir auth.
+	  The product's security guarantees do not depend on the sandbox: the only egress is
+	  slack.com + the user's own LLM endpoint (asserted by the no-egress test), and all
+	  secrets live in the Keychain.
+	-->
+</dict>
+</plist>
