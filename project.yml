@@ -1,0 +1,62 @@
+# XcodeGen project definition. Regenerate the Xcode project with:
+#   xcodegen generate
+# The generated Slacker.xcodeproj is .gitignored — this file is the source of truth.
+name: Slacker
+options:
+  bundleIdPrefix: com.slacker
+  deploymentTarget:
+    macOS: "14.0"
+  createIntermediateGroups: true
+  groupSortPosition: top
+
+settings:
+  base:
+    # Swift 5 language mode for now; revisit strict Swift 6 concurrency in a later milestone.
+    SWIFT_VERSION: "5.0"
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    CODE_SIGN_STYLE: Automatic
+    # Ad-hoc sign so it runs/tests locally without a provisioning profile.
+    CODE_SIGN_IDENTITY: "-"
+
+packages:
+  GRDB:
+    url: https://github.com/groue/GRDB.swift
+    exactVersion: "6.29.3"
+
+targets:
+  Slacker:
+    type: application
+    platform: macOS
+    sources:
+      - Slacker
+    dependencies:
+      - package: GRDB
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.slacker.Slacker
+        ENABLE_HARDENED_RUNTIME: YES
+        CODE_SIGN_ENTITLEMENTS: Slacker/Slacker.entitlements
+        COMBINE_HIDPI_IMAGES: YES
+    info:
+      path: Slacker/Info.plist
+      properties:
+        CFBundleDisplayName: Slacker
+        CFBundleShortVersionString: "0.1.0"
+        LSMinimumSystemVersion: "14.0"
+        # Keep a Dock icon + main window in M0; menu bar is added alongside it.
+        LSUIElement: false
+        NSHumanReadableCopyright: ""
+
+  SlackerTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - SlackerTests
+    dependencies:
+      - target: Slacker
+      - package: GRDB
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.slacker.SlackerTests
+        GENERATE_INFOPLIST_FILE: YES

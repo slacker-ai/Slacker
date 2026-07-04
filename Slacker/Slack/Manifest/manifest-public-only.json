@@ -1,0 +1,21 @@
+{
+  "display_information": {
+    "name": "Slacker",
+    "description": "Local-first catch-up: surfaces missed follow-ups, stale items, and mentions in your own public channels. All processing stays on your machine.",
+    "background_color": "#2c2d30"
+  },
+  "oauth_config": {
+    "scopes": {
+      "user": [
+        "channels:history",
+        "channels:read",
+        "users:read"
+      ]
+    }
+  },
+  "settings": {
+    "org_deploy_enabled": false,
+    "socket_mode_enabled": false,
+    "token_rotation_enabled": false
+  }
+}
