@@ -57,7 +57,7 @@ You create your own Slack app from a manifest in this repo. No shared OAuth app
 or third-party server receives a token for your workspace.
 
 ## Intall Binary
-Intall the newest release [here](https://github.com/slacker-ai/Slacker/releases/download/untagged-ebcb89697785924c7dc5/Slacker.dmg)
+Install the newest release [here](https://github.com/slacker-ai/Slacker/releases/download/untagged-ebcb89697785924c7dc5/Slacker.dmg)
 
 ## Quick Start
 
