@@ -11,6 +11,7 @@
 <p align="center">
   <a href="LICENSE"><img alt="License: AGPL v3" src="https://img.shields.io/badge/license-AGPL--3.0-blue"></a>
   <img alt="Platform: macOS" src="https://img.shields.io/badge/platform-macOS-lightgrey">
+  <img alt="Version: 1.0.0" src="https://img.shields.io/badge/release-v1.0.0-blue">
 </p>
 
 Slacker is a self-evolving, local-first macOS app that surfaces the Slack
@@ -54,6 +55,9 @@ Slacker is designed so there is no Slacker-operated backend.
 
 You create your own Slack app from a manifest in this repo. No shared OAuth app
 or third-party server receives a token for your workspace.
+
+## Intall Binary
+Intall the newest release [here](https://github.com/slacker-ai/Slacker/releases/download/untagged-ebcb89697785924c7dc5/Slacker.dmg)
 
 ## Quick Start
 
