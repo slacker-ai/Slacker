@@ -13,7 +13,7 @@ final class SettingsModel {
     var apiKey: String
     var channels: [Channel] = []
     var workspaces: [Workspace] = []
-    var savedConfirmation = false
+    var autosaveStatus = "Autosaved"
 
     /// Non-nil while the "Add workspace" sheet is presented.
     var addWorkspaceModel: OnboardingModel?
@@ -32,12 +32,21 @@ final class SettingsModel {
     /// user has joined since onboarding.
     @ObservationIgnored var onRefreshChannels: (() async -> Void)?
     var isRefreshingChannels = false
+    @ObservationIgnored private var lastSavedSettings: AppSettings
+    @ObservationIgnored private var lastSavedAPIKey: String
+    @ObservationIgnored private var autosaveGeneration = 0
+    @ObservationIgnored private var autosaveTask: Task<Void, Never>?
 
     init(database: AppDatabase) {
-        self.database = database
-        self.settings = (try? database.dbWriter.read { try AppSettings.fetchOne($0, key: 1) })
+        let loadedSettings = (try? database.dbWriter.read { try AppSettings.fetchOne($0, key: 1) })
             .flatMap { $0 } ?? AppSettings()
-        self.apiKey = ((try? KeychainStore.get(.llmAPIKey)) ?? nil) ?? ""
+        let loadedAPIKey = ((try? KeychainStore.get(.llmAPIKey)) ?? nil) ?? ""
+
+        self.database = database
+        self.settings = loadedSettings
+        self.apiKey = loadedAPIKey
+        self.lastSavedSettings = loadedSettings
+        self.lastSavedAPIKey = loadedAPIKey
         self.learnedPatternsModel = LearnedPatternsModel(database: database)
     }
 
@@ -109,17 +118,45 @@ final class SettingsModel {
         persistChannel(updated)
     }
 
-    func save() {
-        try? database.dbWriter.write { db in
-            try settings.update(db)
+    func scheduleAutosave() {
+        autosaveGeneration += 1
+        autosaveTask?.cancel()
+
+        guard settings != lastSavedSettings || apiKey != lastSavedAPIKey else {
+            autosaveStatus = "Autosaved"
+            return
         }
-        // Empty key clears the stored secret; otherwise upsert it.
-        if apiKey.isEmpty {
-            try? KeychainStore.delete(.llmAPIKey)
-        } else {
-            try? KeychainStore.set(apiKey, for: .llmAPIKey)
+
+        autosaveStatus = "Saving..."
+        let generation = autosaveGeneration
+        autosaveTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            await self?.saveIfCurrent(generation: generation)
         }
-        savedConfirmation = true
+    }
+
+    private func saveIfCurrent(generation: Int) async {
+        guard generation == autosaveGeneration else { return }
+        let settingsToSave = settings
+        let apiKeyToSave = apiKey
+        do {
+            try await database.dbWriter.write { db in
+                try settingsToSave.update(db)
+            }
+            // Empty key clears the stored secret; otherwise upsert it.
+            if apiKeyToSave.isEmpty {
+                try KeychainStore.delete(.llmAPIKey)
+            } else {
+                try KeychainStore.set(apiKeyToSave, for: .llmAPIKey)
+            }
+            guard generation == autosaveGeneration else { return }
+            lastSavedSettings = settingsToSave
+            lastSavedAPIKey = apiKeyToSave
+            autosaveStatus = "Autosaved"
+        } catch {
+            guard generation == autosaveGeneration else { return }
+            autosaveStatus = "Autosave failed"
+        }
     }
 
     /// Pull the latest channel list from Slack, then reload.

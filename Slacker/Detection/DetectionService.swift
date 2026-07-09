@@ -14,6 +14,7 @@ struct DetectionService {
     /// Optional learned-pattern store (§7.5, self-evolution). When nil (or no approved
     /// rows), detection uses pure base rules/prompt.
     var patternStore: PatternStore?
+    var isSelfEvolutionEnabled: () async -> Bool = { true }
     var now: () -> Date = { Date() }
     var makeID: () -> String = { UUID().uuidString }
 
@@ -60,7 +61,7 @@ struct DetectionService {
         // Inject approved learned phrases + LLM guidance (§7.5, self-evolution). Only
         // approved rows are loaded, so unapproved proposals never affect detection.
         var channelLLM = llmClassifier
-        if let patternStore {
+        if let patternStore, await isSelfEvolutionEnabled() {
             let learned = try await patternStore.activePhraseBank(forChannelID: channel.id)
             if !learned.isEmpty {
                 channelClassifier.ruleEngine = RuleEngine(learned: learned)
@@ -102,8 +103,17 @@ struct DetectionService {
                 )
             }
             switch classification.state {
-            case .surfaced: surfaced += 1
-            case .review: review += 1
+            case .surfaced, .review:
+                if let resolutionReason = resolvedThreadReason(existing: existing, root: root, replies: replies, classification: classification) {
+                    try await resolveOrSkipItem(existing: existing, reason: resolutionReason)
+                    notSurfaced += 1
+                    continue
+                }
+                if classification.state == .surfaced {
+                    surfaced += 1
+                } else {
+                    review += 1
+                }
             default: notSurfaced += 1
             }
             try await upsertItem(root: root, channel: channel, classification: classification)
@@ -180,6 +190,45 @@ struct DetectionService {
             "LLM classifier[#\(channel.name) ts=\(root.ts)]: class=\(verdict.messageClass.rawValue), confidence=\(verdict.confidence), routed=\(routed.state?.rawValue ?? "none")."
         )
         return routed
+    }
+
+    private func resolvedThreadReason(
+        existing: Item?,
+        root: Message,
+        replies: [Message],
+        classification: Classification
+    ) -> ResolutionReason? {
+        guard classification.state == .surfaced || classification.state == .review else { return nil }
+        guard existing?.state != .dismissed && existing?.state != .snoozed else { return nil }
+
+        let item = existing ?? Item(
+            id: "candidate",
+            channelID: root.channelID,
+            rootMessageTS: root.ts,
+            threadTS: root.threadTS,
+            type: classification.type ?? .stale,
+            state: classification.state ?? .review,
+            confidence: classification.confidence,
+            createdAt: now(),
+            lastEvaluatedAt: now(),
+            snoozedUntil: nil,
+            resolutionReason: nil
+        )
+        return ResolutionDetector(database: database, now: now).resolution(for: item, root: root, replies: replies)
+    }
+
+    private func resolveOrSkipItem(existing: Item?, reason: ResolutionReason) async throws {
+        guard let existing, existing.state == .open || existing.state == .surfaced || existing.state == .review else {
+            return
+        }
+        try await database.dbWriter.write { db in
+            guard var fresh = try Item.fetchOne(db, key: existing.id),
+                  fresh.state == .open || fresh.state == .surfaced || fresh.state == .review else { return }
+            fresh.state = .resolved
+            fresh.resolutionReason = reason
+            fresh.lastEvaluatedAt = now()
+            try fresh.update(db)
+        }
     }
 
     private func threadContext(root: Message, replies: [Message]) -> String {

@@ -27,6 +27,11 @@ final class OverviewViewModel {
     private let database: AppDatabase
     private let now: () -> Date
     var channels: [ChannelOverview] = []
+    var activeChannels: [ChannelOverview] {
+        channels.filter { channel in
+            channel.summary?.isEmpty == false || channel.openCount > 0 || channel.lastActivityTS != nil
+        }
+    }
 
     /// Triggers an immediate poll+summarize cycle (wired by `AppRoot`).
     @ObservationIgnored var onRefresh: (() async -> Void)?

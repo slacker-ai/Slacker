@@ -15,7 +15,7 @@ enum PatternStatus: String, Codable, Sendable {
 enum PatternSource: String, Codable, Sendable {
     /// Mined by the evolution loop from labeled examples.
     case llm
-    /// Hand-entered by the user (reserved for a future manual-add affordance).
+    /// Hand-entered by the user in Settings.
     case manual
 }
 
@@ -39,4 +39,28 @@ struct LearnedPattern: Codable, Identifiable, Equatable, FetchableRecord, Persis
     var createdAt: Date
     /// When approved/rejected/retired; nil while `proposed`.
     var decidedAt: Date?
+
+    init(
+        id: String,
+        channelID: String?,
+        bucket: RuleBucket,
+        phrase: String,
+        status: PatternStatus,
+        source: PatternSource,
+        rationale: String?,
+        supportingLabelCount: Int,
+        createdAt: Date,
+        decidedAt: Date? = nil
+    ) {
+        self.id = id
+        self.channelID = channelID
+        self.bucket = bucket
+        self.phrase = phrase
+        self.status = status
+        self.source = source
+        self.rationale = rationale
+        self.supportingLabelCount = supportingLabelCount
+        self.createdAt = createdAt
+        self.decidedAt = decidedAt
+    }
 }

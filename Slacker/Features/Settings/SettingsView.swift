@@ -3,6 +3,8 @@ import SwiftUI
 /// Settings (§8.5). LLM key lives only in the Keychain; channels + thresholds in the DB.
 struct SettingsView: View {
     @Bindable var model: SettingsModel
+    var showsCloseButton = true
+    @Environment(\.dismiss) private var dismiss
 
     private let providerNames: [LLMProvider: String] = [
         .openAI: "OpenAI", .anthropic: "Anthropic Claude", .gemini: "Google Gemini",
@@ -37,16 +39,34 @@ struct SettingsView: View {
 
     var body: some View {
         Form {
+            autosaveSection
             detectionSection
             learningSection
             llmSection
             workspacesSection
             channelsSection
-            saveSection
         }
         .formStyle(.grouped)
         .navigationTitle("Settings")
+        .toolbar {
+            if showsCloseButton {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button {
+                        dismiss()
+                    } label: {
+                        Image(systemName: "xmark")
+                    }
+                    .help("Close settings")
+                }
+            }
+            ToolbarItem(placement: .primaryAction) {
+                Label(model.autosaveStatus, systemImage: autosaveStatusIcon)
+                    .foregroundStyle(autosaveStatusColor)
+            }
+        }
         .task { await model.load() }
+        .onChange(of: model.settings) { _, _ in model.scheduleAutosave() }
+        .onChange(of: model.apiKey) { _, _ in model.scheduleAutosave() }
         .sheet(isPresented: Binding(
             get: { model.addWorkspaceModel != nil },
             set: { if !$0 { model.cancelAddWorkspace() } }
@@ -67,6 +87,29 @@ struct SettingsView: View {
         }
         .sheet(isPresented: $model.isShowingAddChannel) {
             AddChannelView(model: model)
+        }
+    }
+
+    private var autosaveSection: some View {
+        Section {
+            Label("Changes save automatically.", systemImage: "checkmark.circle")
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var autosaveStatusIcon: String {
+        switch model.autosaveStatus {
+        case "Autosaved": "checkmark.circle.fill"
+        case "Autosave failed": "exclamationmark.triangle.fill"
+        default: "arrow.triangle.2.circlepath"
+        }
+    }
+
+    private var autosaveStatusColor: Color {
+        switch model.autosaveStatus {
+        case "Autosaved": .green
+        case "Autosave failed": .red
+        default: .secondary
         }
     }
 
@@ -138,6 +181,12 @@ struct SettingsView: View {
 
     private var learningSection: some View {
         Section {
+            LabeledRow("Enable self-evolution",
+                       help: "When enabled, triage decisions can propose learned detection phrases and learned AI guidance. Proposals still require your approval before affecting detection.") {
+                Toggle("", isOn: $model.settings.selfEvolutionEnabled)
+                    .labelsHidden()
+            }
+
             NavigationLink {
                 LearnedPatternsView(model: model.learnedPatternsModel)
             } label: {
@@ -145,18 +194,17 @@ struct SettingsView: View {
                     EmptyView()
                 } label: {
                     HStack {
-                        Label("Learned patterns", systemImage: "wand.and.stars")
-                        HelpBadge("As you triage items, Slacker learns your team's language and proposes new detection phrases and AI guidance. Review and approve them here — nothing changes detection until you do.")
-                        if model.pendingEvolutionUpdateCount > 0 {
-                            Text("\(model.pendingEvolutionUpdateCount) pending")
-                                .font(.caption2.weight(.semibold))
-                                .foregroundStyle(.white)
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 2)
-                                .background(Capsule().fill(.red))
-                        }
+                        Label("Approved phrases", systemImage: "wand.and.stars")
+                        HelpBadge("Open Learned patterns to add, view, or retire approved phrases and active AI guidance.")
                     }
                 }
+            }
+            .disabled(!model.settings.selfEvolutionEnabled)
+
+            if !model.settings.selfEvolutionEnabled {
+                Text("Self-evolution is off. Slacker will use only the built-in detection rules and base AI prompts.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         } header: {
             Text("Self-evolution")
@@ -382,18 +430,6 @@ struct SettingsView: View {
         }
     }
 
-    private var saveSection: some View {
-        Section {
-            HStack {
-                Button("Save") { model.save() }
-                    .keyboardShortcut(.defaultAction)
-                if model.savedConfirmation {
-                    Label("Saved", systemImage: "checkmark.circle.fill")
-                        .foregroundStyle(.green).font(.caption)
-                }
-            }
-        }
-    }
 }
 
 /// A form row: label + a "?" help badge on the left, the control on the right.

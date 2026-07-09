@@ -157,10 +157,72 @@ final class PatternStoreTests: XCTestCase {
         }
         XCTAssertEqual(approvedCount, 1, "Auto-save must not create duplicate versions for unchanged text.")
     }
+
+    func testManualApprovedPhraseFeedsActivePhraseBankImmediately() async throws {
+        let db = try makeDB()
+        let store = PatternStore(database: db)
+
+        try await store.saveManualPattern(channelID: "C1", bucket: .blocker, phrase: "red alert on")
+
+        let bank = try await store.activePhraseBank(forChannelID: "C1")
+        XCTAssertEqual(bank.phrases(for: .blocker), ["red alert on"])
+        let stored = try await db.dbWriter.read { try LearnedPattern.fetchOne($0) }
+        XCTAssertEqual(stored?.status, .approved)
+        XCTAssertEqual(stored?.source, .manual)
+    }
+
+    func testRejectAllProposalsLeavesApprovedRowsActive() async throws {
+        let db = try makeDB()
+        let store = PatternStore(database: db)
+        try await store.insertProposals([
+            LearnedPattern(id: "proposed", channelID: "C1", bucket: .blocker, phrase: "red alert on",
+                           status: .proposed, source: .llm, rationale: nil, supportingLabelCount: 1,
+                           createdAt: Date(timeIntervalSince1970: 1)),
+            LearnedPattern(id: "approved", channelID: "C1", bucket: .help, phrase: "spin up a",
+                           status: .approved, source: .manual, rationale: nil, supportingLabelCount: 0,
+                           createdAt: Date(timeIntervalSince1970: 1), decidedAt: Date(timeIntervalSince1970: 1)),
+        ], guidance: LearnedGuidance(id: "guidance", channelID: "C1", text: "Ignore deploy FYIs.",
+                                     status: .proposed, version: 1, createdAt: Date(timeIntervalSince1970: 1)))
+
+        try await store.rejectAllProposals()
+
+        let statuses = try await db.dbWriter.read { db in
+            try LearnedPattern.fetchAll(db).reduce(into: [String: PatternStatus]()) { $0[$1.id] = $1.status }
+        }
+        XCTAssertEqual(statuses["proposed"], .rejected)
+        XCTAssertEqual(statuses["approved"], .approved)
+        let guidance = try await db.dbWriter.read { try LearnedGuidance.fetchOne($0, key: "guidance") }
+        XCTAssertEqual(guidance?.status, .rejected)
+    }
+
+    func testSimilarGuidanceIsDetected() async throws {
+        let db = try makeDB()
+        let store = PatternStore(database: db)
+        try await store.insertProposals([], guidance: LearnedGuidance(
+            id: "g1",
+            channelID: "C1",
+            text: "When a thread says false alarm, do not surface the original request.",
+            status: .proposed,
+            version: 1,
+            createdAt: Date(timeIntervalSince1970: 1)
+        ))
+
+        let similar = try await store.hasSimilarGuidance(
+            "When the thread says false alarm do not surface original requests",
+            channelID: "C1"
+        )
+        XCTAssertTrue(similar)
+    }
 }
 
 @MainActor
 final class LearnedPatternsModelTests: XCTestCase {
+    private func seedChannel(_ db: AppDatabase) throws {
+        try db.dbWriter.write { dbc in
+            try Channel(id: "C1", workspaceID: "T1", name: "general", isPrivate: false, isWatched: true).insert(dbc)
+        }
+    }
+
     func testActiveGuidanceAutoSavesDraft() async throws {
         let db = try AppDatabase.makeInMemory()
         let model = LearnedPatternsModel(database: db)
@@ -173,6 +235,96 @@ final class LearnedPatternsModelTests: XCTestCase {
         let document = try await PatternStore(database: db).activeGuidanceDocument()
         XCTAssertEqual(document, "# Rules\n\n- Auto-save edits.")
         XCTAssertEqual(model.activeGuidanceSaveStatus, "Saved")
+    }
+
+    func testPendingEvolutionCountFeedsModel() async throws {
+        let db = try AppDatabase.makeInMemory()
+        try seedChannel(db)
+        try await PatternStore(database: db).insertProposals([
+            LearnedPattern(id: "p1", channelID: "C1", bucket: .blocker, phrase: "red alert on",
+                           status: .proposed, source: .llm, rationale: nil, supportingLabelCount: 1,
+                           createdAt: Date(timeIntervalSince1970: 1))
+        ], guidance: LearnedGuidance(id: "g1", channelID: "C1", text: "Treat paging now as resolved.",
+                                     status: .proposed, version: 1, createdAt: Date(timeIntervalSince1970: 1)))
+
+        let model = LearnedPatternsModel(database: db)
+        await model.load()
+
+        XCTAssertEqual(model.pendingProposalCount, 2)
+    }
+
+    func testApprovingAndRejectingFromEvolutionModelReloadsStatus() async throws {
+        let db = try AppDatabase.makeInMemory()
+        try seedChannel(db)
+        try await PatternStore(database: db).insertProposals([
+            LearnedPattern(id: "p1", channelID: "C1", bucket: .blocker, phrase: "red alert on",
+                           status: .proposed, source: .llm, rationale: nil, supportingLabelCount: 1,
+                           createdAt: Date(timeIntervalSince1970: 1)),
+            LearnedPattern(id: "p2", channelID: "C1", bucket: .help, phrase: "spin up a",
+                           status: .proposed, source: .llm, rationale: nil, supportingLabelCount: 1,
+                           createdAt: Date(timeIntervalSince1970: 1)),
+        ], guidance: nil)
+
+        let model = LearnedPatternsModel(database: db)
+        await model.load()
+        await model.approve(try XCTUnwrap(model.proposedPatterns.first { $0.id == "p1" }))
+        await model.reject(try XCTUnwrap(model.proposedPatterns.first { $0.id == "p2" }))
+
+        XCTAssertEqual(model.pendingProposalCount, 0)
+        XCTAssertEqual(model.approvedPatterns.map(\.id), ["p1"])
+        let rejected = try await db.dbWriter.read { try LearnedPattern.fetchOne($0, key: "p2") }
+        XCTAssertEqual(rejected?.status, .rejected)
+    }
+
+    func testModelBulkRejectAffectsOnlyProposedRows() async throws {
+        let db = try AppDatabase.makeInMemory()
+        try seedChannel(db)
+        try await PatternStore(database: db).insertProposals([
+            LearnedPattern(id: "proposed", channelID: "C1", bucket: .blocker, phrase: "red alert on",
+                           status: .proposed, source: .llm, rationale: nil, supportingLabelCount: 1,
+                           createdAt: Date(timeIntervalSince1970: 1)),
+            LearnedPattern(id: "approved", channelID: "C1", bucket: .help, phrase: "spin up a",
+                           status: .approved, source: .manual, rationale: nil, supportingLabelCount: 0,
+                           createdAt: Date(timeIntervalSince1970: 1), decidedAt: Date(timeIntervalSince1970: 1)),
+        ], guidance: nil)
+
+        let model = LearnedPatternsModel(database: db)
+        await model.load()
+        await model.rejectAllProposals()
+
+        XCTAssertEqual(model.pendingProposalCount, 0)
+        let approved = try await db.dbWriter.read { try LearnedPattern.fetchOne($0, key: "approved") }
+        XCTAssertEqual(approved?.status, .approved)
+    }
+
+    func testManualPhraseSaveCreatesApprovedPattern() async throws {
+        let db = try AppDatabase.makeInMemory()
+        try seedChannel(db)
+        let model = LearnedPatternsModel(database: db)
+        await model.load()
+
+        model.manualPhraseBucket = .blocker
+        model.manualPhraseChannelSelection = "C1"
+        model.manualPhraseDraft = "red alert on"
+        await model.saveManualPhrase()
+
+        XCTAssertEqual(model.manualPhraseSaveStatus, "Saved")
+        XCTAssertEqual(model.approvedPatterns.first?.phrase, "red alert on")
+        let bank = try await PatternStore(database: db).activePhraseBank(forChannelID: "C1")
+        XCTAssertEqual(bank.phrases(for: .blocker), ["red alert on"])
+    }
+
+    func testInvalidManualPhraseShowsSaveError() async throws {
+        let db = try AppDatabase.makeInMemory()
+        let model = LearnedPatternsModel(database: db)
+        await model.load()
+
+        model.manualPhraseDraft = "oops"
+        await model.saveManualPhrase()
+
+        XCTAssertEqual(model.manualPhraseSaveStatus, "Use a specific multi-word phrase.")
+        let count = try await db.dbWriter.read { try LearnedPattern.fetchCount($0) }
+        XCTAssertEqual(count, 0)
     }
 }
 
@@ -233,7 +385,7 @@ final class PatternEvolutionServiceTests: XCTestCase {
         let db = try makeDB()
         try seedMessage(db, ts: "1", text: "red alert on the payments deploy")
 
-        // 5 admissible + 2 inadmissible (single token / base phrase) → expect cap at 3, none invalid.
+        // 5 admissible + 2 inadmissible (single token / base phrase) -> expect cap at 1, none invalid.
         let valid = (0..<5).map { #"{"bucket":"blocker","phrase":"alert phrase \#($0) here","rationale":"x"}"# }
         let invalid = [#"{"bucket":"blocker","phrase":"fix","rationale":"x"}"#,
                        #"{"bucket":"ask","phrase":"can you","rationale":"x"}"#]
@@ -246,7 +398,7 @@ final class PatternEvolutionServiceTests: XCTestCase {
         let proposed = try await db.dbWriter.read {
             try LearnedPattern.filter(Column("status") == "proposed").fetchAll($0)
         }
-        XCTAssertEqual(proposed.count, 3, "Proposals must be capped per triage.")
+        XCTAssertEqual(proposed.count, 1, "Proposals must be capped per triage.")
         for p in proposed {
             XCTAssertTrue(RuleEngine.isAdmissibleLearnedPhrase(p.phrase), "Invalid phrase leaked: \(p.phrase)")
             XCTAssertEqual(p.supportingLabelCount, 1, "Single-example proposals report a count of 1.")
@@ -260,7 +412,7 @@ final class PatternEvolutionServiceTests: XCTestCase {
     func testIgnoreVerdictProposesGuidanceOnly() async throws {
         let db = try makeDB()
         try seedMessage(db, ts: "1", text: "lunch is in the kitchen")
-        let stub = EvolutionStubLLM(response: #"{"phrases":[],"guidance":"Social/logistics chatter is not actionable."}"#)
+        let stub = EvolutionStubLLM(response: #"{"phrases":[{"bucket":"ask","phrase":"lunch is in","rationale":"bad idea"}],"guidance":"Social/logistics chatter is not actionable."}"#)
 
         await service(db, llm: stub).evolveFromTriage(channelID: "C1", messageTS: "1", verdict: .ignore)
 
@@ -269,6 +421,30 @@ final class PatternEvolutionServiceTests: XCTestCase {
         let guidance = try await db.dbWriter.read { try LearnedGuidance.fetchAll($0) }
         XCTAssertEqual(guidance.count, 1)
         XCTAssertEqual(guidance.first?.status, .proposed)
+    }
+
+    func testNearDuplicateGuidanceIsNotReproposed() async throws {
+        let db = try makeDB()
+        try seedMessage(db, ts: "1", text: "false alarm, vendor status page blip")
+        try await PatternStore(database: db).insertProposals([], guidance: LearnedGuidance(
+            id: "g1",
+            channelID: "C1",
+            text: "When a thread says false alarm, do not surface the original request.",
+            status: .proposed,
+            version: 1,
+            createdAt: Date(timeIntervalSince1970: 1)
+        ))
+        let stub = EvolutionStubLLM(response: #"{"phrases":[],"guidance":"When the thread says false alarm do not surface original requests."}"#)
+
+        await service(db, llm: stub).evolveFromTriage(
+            channelID: "C1",
+            messageTS: "1",
+            verdict: .ignore,
+            source: .dismissal
+        )
+
+        let guidanceCount = try await db.dbWriter.read { try LearnedGuidance.fetchCount($0) }
+        XCTAssertEqual(guidanceCount, 1)
     }
 
     func testResolvedTriageUsesThreadContextAndDoesNotProposeRootTriggerPhrase() async throws {

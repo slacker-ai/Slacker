@@ -109,12 +109,19 @@ final class AppRoot {
         let llmClassifier = llmClient.map { LLMClassifier(client: $0) }
 
         let patternStore = PatternStore(database: db)
-        let detection = DetectionService(
+        var detection = DetectionService(
             database: db,
             llmClassifier: llmClassifier,
             calibration: CalibrationService(database: db),
             patternStore: patternStore
         )
+        detection.isSelfEvolutionEnabled = {
+            let enabled = try? await db.dbWriter.read {
+                try AppSettings.fetchOne($0, key: 1)?.selfEvolutionEnabled
+            }
+            return (enabled ?? nil) ?? true
+        }
+        let detectionService = detection
         let resolution = ResolutionDetector(database: db)
         var summary = SummaryService(database: db, llm: llmClient)
         summary.minimumRefreshIntervalSeconds = {
@@ -135,7 +142,7 @@ final class AppRoot {
             onCycleComplete: {
                 // Each cycle over the freshly-ingested mirror: detect, auto-close anything
                 // already handled (§7.4), then refresh daily summaries (once/day, §8.3).
-                try await detection.detectWatchedChannels()
+                try await detectionService.detectWatchedChannels()
                 try await resolution.resolveOpenItems()
                 try await threadSummaries.analyzeOpenThreads()
                 try await summary.generateDailySummaries()
@@ -159,6 +166,11 @@ final class AppRoot {
         // phrase and/or LLM-guidance change (human-approved in Settings). Runs in the
         // background so triage stays instant.
         mainViewModel?.onTriageLabeled = { [weak self] channelID, messageTS, verdict, source in
+            let enabled = try? await db.dbWriter.read {
+                try AppSettings.fetchOne($0, key: 1)?.selfEvolutionEnabled
+            }
+            guard (enabled ?? nil) ?? true else { return }
+
             let before = await MainActor.run {
                 self?.settingsModel?.pendingEvolutionUpdateCount ?? 0
             }

@@ -78,9 +78,16 @@ struct IngestionService {
             let (channelID, rootTS) = (parts[0], parts[1])
 
             // conversations.replies returns the root (with current reactions) + all replies.
-            let thread = try await client.conversationsReplies(
-                token: token, channelID: channelID, threadTS: rootTS
-            )
+            let thread: [SlackMessage]
+            do {
+                thread = try await client.conversationsReplies(
+                    token: token, channelID: channelID, threadTS: rootTS
+                )
+            } catch SlackClientError.api("thread_not_found") {
+                Log.info("Ingestion: tracked thread not found; dropping local item(s) for channel=\(channelID) rootTS=\(rootTS).")
+                try await dropItemsForMissingThread(channelID: channelID, rootTS: rootTS)
+                continue
+            }
             guard !thread.isEmpty else { continue }
 
             try await resolveUnknownUsers(in: thread, token: token)
@@ -88,6 +95,14 @@ struct IngestionService {
             try await database.dbWriter.write { db in
                 for record in records { try record.save(db) }  // idempotent upsert
             }
+        }
+    }
+
+    private func dropItemsForMissingThread(channelID: String, rootTS: String) async throws {
+        try await database.dbWriter.write { db in
+            try Item
+                .filter(Column("channelID") == channelID && Column("rootMessageTS") == rootTS)
+                .deleteAll(db)
         }
     }
 

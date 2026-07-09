@@ -22,7 +22,7 @@ struct PatternEvolutionService {
     var makeID: () -> String = { UUID().uuidString }
 
     /// Cap proposals per triage to bound blast radius (one click shouldn't flood review).
-    private let maxProposedPhrasesPerTriage = 3
+    private let maxProposedPhrasesPerTriage = 1
     /// Recent labels pulled for contrastive context (keeps the prompt small / cheap).
     private let recentLabelLimit = 60
     /// Contrastive examples shown per side (matters / ignore) in the prompt.
@@ -105,7 +105,7 @@ struct PatternEvolutionService {
             return
         }
 
-        let patterns = source == .markResolved
+        let patterns = verdict == .ignore || source == .markResolved
             ? []
             : validatedPatterns(from: proposal.phrases, channelID: channelID)
         let guidance = try await validatedGuidance(proposal.guidance, channelID: channelID)
@@ -250,8 +250,7 @@ struct PatternEvolutionService {
     private func validatedGuidance(_ text: String, channelID: String) async throws -> LearnedGuidance? {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
-        if let latest = try await store.latestGuidanceText(forChannelID: channelID),
-           latest.trimmingCharacters(in: .whitespacesAndNewlines) == trimmed {
+        if try await store.hasSimilarGuidance(trimmed, channelID: channelID) {
             return nil
         }
         let version = try await store.nextGuidanceVersion(forChannelID: channelID)

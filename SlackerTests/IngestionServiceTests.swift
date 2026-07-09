@@ -204,6 +204,54 @@ final class IngestionServiceTests: XCTestCase {
         XCTAssertEqual(item?.resolutionReason, .stated)
     }
 
+    func testMissingTrackedThreadDoesNotFailRefreshCycle() async throws {
+        let db = try AppDatabase.makeInMemory()
+        try watchedChannel(db, lastPolledTS: "500.0")
+        try await db.dbWriter.write { dbc in
+            try Message(channelID: "C1", ts: "100.0", threadTS: "100.0", userID: "U1",
+                        text: "deleted thread", reactionsJSON: nil, ingestedAt: self.fixedNow).insert(dbc)
+            try Message(channelID: "C1", ts: "200.0", threadTS: "200.0", userID: "U1",
+                        text: "live thread", reactionsJSON: nil, ingestedAt: self.fixedNow).insert(dbc)
+            try Item(id: "missing", channelID: "C1", rootMessageTS: "100.0", threadTS: "100.0",
+                     type: .stale, state: .surfaced, confidence: 0.9, createdAt: self.fixedNow,
+                     lastEvaluatedAt: self.fixedNow, snoozedUntil: nil, resolutionReason: nil).insert(dbc)
+            try Item(id: "live", channelID: "C1", rootMessageTS: "200.0", threadTS: "200.0",
+                     type: .stale, state: .surfaced, confidence: 0.9, createdAt: self.fixedNow,
+                     lastEvaluatedAt: self.fixedNow, snoozedUntil: nil, resolutionReason: nil).insert(dbc)
+        }
+
+        let transport = StubTransport { request in
+            let url = request.url?.absoluteString ?? ""
+            if url.contains("conversations.history") {
+                return (jsonData(#"{"ok":true,"messages":[],"response_metadata":{"next_cursor":""}}"#),
+                        makeHTTPResponse(200))
+            }
+            if url.contains("conversations.replies") {
+                let ts = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?
+                    .queryItems?.first(where: { $0.name == "ts" })?.value
+                if ts == "100.0" {
+                    return (jsonData(#"{"ok":false,"error":"thread_not_found"}"#), makeHTTPResponse(200))
+                }
+                return (jsonData(#"""
+                {"ok":true,"messages":[
+                  {"ts":"200.0","user":"U1","text":"live thread","thread_ts":"200.0"},
+                  {"ts":"600.0","user":"U2","text":"new reply","thread_ts":"200.0"}
+                ],"response_metadata":{"next_cursor":""}}
+                """#), makeHTTPResponse(200))
+            }
+            return (jsonData(#"{"ok":true,"user":{"id":"U2","name":"x"}}"#), makeHTTPResponse(200))
+        }
+
+        try await service(transport, db).pollWorkspace(workspaceID: "T1", token: "t")
+
+        let droppedItem = try await db.dbWriter.read { try Item.fetchOne($0, key: "missing") }
+        let liveItem = try await db.dbWriter.read { try Item.fetchOne($0, key: "live") }
+        let liveReply = try await db.dbWriter.read { try Message.fetchOne($0, key: "C1:600.0") }
+        XCTAssertNil(droppedItem, "missing Slack threads should be dropped so they do not fail every poll")
+        XCTAssertNotNil(liveItem, "unrelated tracked threads must be preserved")
+        XCTAssertNotNil(liveReply, "refresh should continue after a missing tracked thread")
+    }
+
     func testRefreshesDismissedItemThreadsForMentionRevival() async throws {
         let db = try AppDatabase.makeInMemory()
         try watchedChannel(db, lastPolledTS: "500.0")

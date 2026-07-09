@@ -79,6 +79,34 @@ final class DetectionServiceTests: XCTestCase {
         XCTAssertEqual(count, 0)
     }
 
+    func testAlreadyResolvedThreadDoesNotCreateTransientItem() async throws {
+        let db = try AppDatabase.makeInMemory()
+        try seedChannel(db)
+        try insert(db, ts: "100.0", user: "U1", text: "staging config", threadTS: "100.0")
+        try insert(db, ts: "101.0", user: "U1", text: "following up on this", threadTS: "100.0")
+        try insert(db, ts: "102.0", user: "U2", text: "fixed", threadTS: "100.0")
+
+        try await makeService(db).detectWatchedChannels()
+
+        let count = try await db.dbWriter.read { try Item.fetchCount($0) }
+        XCTAssertEqual(count, 0, "detection must not briefly surface a thread that is already resolved")
+    }
+
+    func testAlreadyResolvedActiveThreadIsClosedDuringDetection() async throws {
+        let db = try AppDatabase.makeInMemory()
+        try seedChannel(db)
+        try insert(db, ts: "100.0", user: "U1", text: "staging config", threadTS: "100.0")
+        try insert(db, ts: "101.0", user: "U1", text: "following up on this", threadTS: "100.0")
+        try insert(db, ts: "102.0", user: "U2", text: "fixed", threadTS: "100.0")
+        try await insertItem(db, root: "100.0", type: .stale, state: .surfaced)
+
+        try await makeService(db).detectWatchedChannels()
+
+        let item = try await db.dbWriter.read { try Item.fetchOne($0, key: "item-100.0") }
+        XCTAssertEqual(item?.state, .resolved)
+        XCTAssertEqual(item?.resolutionReason, .stated)
+    }
+
     func testNoUncertainItemIsEverSurfaced() async throws {
         let db = try AppDatabase.makeInMemory()
         try seedChannel(db)

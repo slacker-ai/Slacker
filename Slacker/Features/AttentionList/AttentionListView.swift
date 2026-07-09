@@ -4,6 +4,7 @@ import AppKit
 /// The default "Needs attention" view (§8.2): ranked, grouped by signal type.
 struct AttentionListView: View {
     @Bindable var model: MainViewModel
+    var showsNavigationChrome = true
 
     var body: some View {
         Group {
@@ -26,15 +27,17 @@ struct AttentionListView: View {
                 }
             }
         }
-        .navigationTitle("Needs attention")
+        .navigationTitle(showsNavigationChrome ? "Needs attention" : "")
         .toolbar {
-            ToolbarItem {
-                Button {
-                    Task { await model.refreshNow() }
-                } label: {
-                    Label("Refresh", systemImage: "arrow.clockwise")
+            if showsNavigationChrome {
+                ToolbarItem {
+                    Button {
+                        Task { await model.refreshNow() }
+                    } label: {
+                        Label("Refresh", systemImage: "arrow.clockwise")
+                    }
+                    .disabled(model.isRefreshing)
                 }
-                .disabled(model.isRefreshing)
             }
         }
     }

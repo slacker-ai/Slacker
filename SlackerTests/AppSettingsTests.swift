@@ -11,6 +11,7 @@ final class AppSettingsTests: XCTestCase {
         XCTAssertEqual(settings.summaryRefreshIntervalMinutes, 360)
         XCTAssertEqual(settings.manifestVariant, .publicAndPrivate)
         XCTAssertEqual(settings.llmProvider, .anthropic)
+        XCTAssertTrue(settings.selfEvolutionEnabled)
         XCTAssertFalse(settings.onboardingCompleted)
     }
 

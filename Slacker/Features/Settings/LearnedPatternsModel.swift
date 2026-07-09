@@ -10,14 +10,20 @@ import GRDB
 final class LearnedPatternsModel {
     private let database: AppDatabase
     private let store: PatternStore
+    static let globalChannelSelection = "__global__"
 
     var proposedPatterns: [LearnedPattern] = []
     var approvedPatterns: [LearnedPattern] = []
     var proposedGuidance: [LearnedGuidance] = []
     var activeGuidanceDraft: String = ""
     var activeGuidanceSaveStatus: String = "Saved"
+    var manualPhraseDraft: String = ""
+    var manualPhraseBucket: RuleBucket = .ask
+    var manualPhraseChannelSelection: String = LearnedPatternsModel.globalChannelSelection
+    var manualPhraseSaveStatus: String = ""
     /// channelID → display name (for grouping). Global rows use a synthetic label.
     var channelNames: [String: String] = [:]
+    var channels: [Channel] = []
     /// patternID → offline precision impact of approving it.
     var deltas: [String: PrecisionDelta] = [:]
     @ObservationIgnored private var lastSavedActiveGuidance: String = ""
@@ -53,6 +59,41 @@ final class LearnedPatternsModel {
         proposedPatterns.count + proposedGuidance.count
     }
 
+    var safeProposedPhraseCount: Int {
+        proposedPatterns.filter { deltas[$0.id]?.regresses == false }.count
+    }
+
+    var safePhraseBulkStatus: String {
+        guard !proposedPatterns.isEmpty else { return "No phrase proposals pending." }
+        if safeProposedPhraseCount > 0 {
+            return "\(safeProposedPhraseCount) phrase proposal(s) have a non-regressing precision estimate."
+        }
+        if proposedPatterns.allSatisfy({ deltas[$0.id] == nil }) {
+            return "Bulk approval needs labeled examples first. Review individual phrase cards if one is clearly correct."
+        }
+        return "Current phrase proposals may reduce precision. Review them individually."
+    }
+
+    var canSaveManualPhrase: Bool {
+        RuleEngine.isAdmissibleLearnedPhrase(normalizedManualPhrase)
+    }
+
+    var manualPhraseValidationMessage: String? {
+        let phrase = normalizedManualPhrase
+        guard !phrase.isEmpty else { return nil }
+        guard phrase.count >= 6, phrase.contains(" ") else {
+            return "Use a specific multi-word phrase."
+        }
+        guard RuleEngine.isAdmissibleLearnedPhrase(phrase) else {
+            return "That phrase is already covered by built-in rules."
+        }
+        return nil
+    }
+
+    private var normalizedManualPhrase: String {
+        manualPhraseDraft.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
     func displayName(forChannelID channelID: String?) -> String {
         guard let channelID else { return "All channels (global)" }
         return channelNames[channelID].map { "#\($0)" } ?? channelID
@@ -69,6 +110,11 @@ final class LearnedPatternsModel {
             try Channel.fetchAll(db)
         }) ?? []
 
+        self.channels = channels
+        if manualPhraseChannelSelection != Self.globalChannelSelection,
+           !channels.contains(where: { $0.id == manualPhraseChannelSelection }) {
+            manualPhraseChannelSelection = Self.globalChannelSelection
+        }
         channelNames = Dictionary(channels.map { ($0.id, $0.name) }, uniquingKeysWith: { a, _ in a })
         proposedPatterns = patterns.filter { $0.status == .proposed }
         approvedPatterns = patterns.filter { $0.status == .approved }
@@ -89,6 +135,37 @@ final class LearnedPatternsModel {
 
     func approve(_ guidance: LearnedGuidance) async { await act { try await store.approveGuidance(guidance.id) } }
     func reject(_ guidance: LearnedGuidance) async { await act { try await store.rejectGuidance(guidance.id) } }
+
+    func approveSafePhrases() async {
+        let safeIDs = proposedPatterns
+            .filter { deltas[$0.id]?.regresses == false }
+            .map(\.id)
+        guard !safeIDs.isEmpty else { return }
+        await act {
+            for id in safeIDs {
+                try await store.approvePattern(id)
+            }
+        }
+    }
+
+    func rejectAllProposals() async {
+        await act { try await store.rejectAllProposals() }
+    }
+
+    func saveManualPhrase() async {
+        let phrase = normalizedManualPhrase
+        guard RuleEngine.isAdmissibleLearnedPhrase(phrase) else {
+            manualPhraseSaveStatus = manualPhraseValidationMessage ?? "Enter a phrase first."
+            return
+        }
+
+        let channelID = manualPhraseChannelSelection == Self.globalChannelSelection ? nil : manualPhraseChannelSelection
+        await act {
+            try await store.saveManualPattern(channelID: channelID, bucket: manualPhraseBucket, phrase: phrase)
+        }
+        manualPhraseDraft = ""
+        manualPhraseSaveStatus = "Saved"
+    }
 
     func activeGuidanceDidChange() {
         guidanceSaveGeneration += 1

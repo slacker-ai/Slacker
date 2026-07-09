@@ -255,6 +255,14 @@ struct AppDatabase {
             }
         }
 
+        migrator.registerMigration("v16_self_evolution_setting") { db in
+            try db.alter(table: "appSettings") { t in
+                t.add(column: "selfEvolutionEnabled", .boolean)
+                    .notNull()
+                    .defaults(to: true)
+            }
+        }
+
         return migrator
     }
 }

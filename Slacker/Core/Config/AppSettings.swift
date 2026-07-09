@@ -52,6 +52,10 @@ struct AppSettings: Codable, Equatable {
     /// Optional explicit path to the CLI binary (Codex / Claude Code); empty = auto-detect.
     var cliPathOverride: String = ""
 
+    /// Enables learned detection phrases, learned guidance injection, and new
+    /// self-evolution proposals from triage.
+    var selfEvolutionEnabled: Bool = true
+
     /// Whether the user has completed onboarding (token validated + channels picked).
     var onboardingCompleted: Bool = false
 

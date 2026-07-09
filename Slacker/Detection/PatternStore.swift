@@ -99,11 +99,67 @@ struct PatternStore {
         }
     }
 
-    // MARK: - Triage (Settings UI)
+    /// True when a proposed guidance block is a duplicate or near-duplicate of existing
+    /// guidance in the same scope. Used to keep the approval queue from filling with
+    /// tiny rewordings.
+    func hasSimilarGuidance(_ text: String, channelID: String?) async throws -> Bool {
+        let normalized = Self.normalizedGuidance(text)
+        guard !normalized.isEmpty else { return true }
+
+        return try await database.dbWriter.read { db in
+            let scope = channelID.map { Column("channelID") == $0 } ?? (Column("channelID") == nil)
+            let existing = try LearnedGuidance
+                .filter(scope)
+                .fetchAll(db)
+                .map(\.text)
+            return existing.contains { Self.guidanceSimilarity(normalized, Self.normalizedGuidance($0)) >= 0.86 }
+        }
+    }
+
+    // MARK: - Triage / approval UI
 
     func approvePattern(_ id: String) async throws { try await setPatternStatus(id, .approved) }
     func rejectPattern(_ id: String) async throws { try await setPatternStatus(id, .rejected) }
     func retirePattern(_ id: String) async throws { try await setPatternStatus(id, .retired) }
+
+    /// Save a hand-entered phrase directly as approved. If the same scoped phrase already
+    /// exists in any lifecycle state, promote that row instead of inserting a duplicate.
+    func saveManualPattern(channelID: String?, bucket: RuleBucket, phrase: String) async throws {
+        let normalized = phrase.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard RuleEngine.isAdmissibleLearnedPhrase(normalized) else { return }
+
+        let timestamp = now()
+        try await database.dbWriter.write { db in
+            let scope = channelID.map { Column("channelID") == $0 } ?? (Column("channelID") == nil)
+            if let existing = try LearnedPattern
+                .filter(scope)
+                .filter(Column("bucket") == bucket.rawValue)
+                .filter(Column("phrase") == normalized)
+                .fetchOne(db) {
+                _ = try LearnedPattern
+                    .filter(key: existing.id)
+                    .updateAll(db,
+                               Column("status").set(to: PatternStatus.approved.rawValue),
+                               Column("source").set(to: PatternSource.manual.rawValue),
+                               Column("rationale").set(to: nil),
+                               Column("decidedAt").set(to: timestamp))
+            } else {
+                try LearnedPattern(
+                    id: UUID().uuidString,
+                    channelID: channelID,
+                    bucket: bucket,
+                    phrase: normalized,
+                    status: .approved,
+                    source: .manual,
+                    rationale: nil,
+                    supportingLabelCount: 0,
+                    createdAt: timestamp,
+                    decidedAt: timestamp
+                ).insert(db)
+            }
+            try Self.resetDetectionCursor(db, channelID: channelID)
+        }
+    }
 
     func approveGuidance(_ id: String) async throws {
         let timestamp = now()
@@ -139,6 +195,21 @@ struct PatternStore {
     }
     func rejectGuidance(_ id: String) async throws { try await setGuidanceStatus(id, .rejected) }
     func retireGuidance(_ id: String) async throws { try await setGuidanceStatus(id, .retired) }
+
+    /// Reject every still-pending evolution proposal. Approved/manual rows remain active.
+    func rejectAllProposals() async throws {
+        let timestamp = now()
+        try await database.dbWriter.write { db in
+            _ = try LearnedPattern
+                .filter(Column("status") == PatternStatus.proposed.rawValue)
+                .updateAll(db, Column("status").set(to: PatternStatus.rejected.rawValue),
+                           Column("decidedAt").set(to: timestamp))
+            _ = try LearnedGuidance
+                .filter(Column("status") == PatternStatus.proposed.rawValue)
+                .updateAll(db, Column("status").set(to: PatternStatus.rejected.rawValue),
+                           Column("decidedAt").set(to: timestamp))
+        }
+    }
 
     func saveActiveGuidanceDocument(_ text: String) async throws {
         let timestamp = now()
@@ -212,5 +283,39 @@ struct PatternStore {
         } else {
             try Channel.updateAll(db, Column("lastDetectedTS").set(to: nil))
         }
+    }
+
+    private static func normalizedGuidance(_ text: String) -> String {
+        let allowed = CharacterSet.alphanumerics.union(.whitespacesAndNewlines)
+        let scalars = text.lowercased().unicodeScalars.map { scalar in
+            allowed.contains(scalar) ? String(scalar) : " "
+        }
+        return scalars.joined()
+            .split(whereSeparator: \.isWhitespace)
+            .joined(separator: " ")
+    }
+
+    private static func guidanceSimilarity(_ lhs: String, _ rhs: String) -> Double {
+        guard !lhs.isEmpty, !rhs.isEmpty else { return lhs == rhs ? 1 : 0 }
+        if lhs == rhs || lhs.contains(rhs) || rhs.contains(lhs) { return 1 }
+
+        let lhsTokens = guidanceTokens(lhs)
+        let rhsTokens = guidanceTokens(rhs)
+        guard !lhsTokens.isEmpty, !rhsTokens.isEmpty else { return 0 }
+
+        let intersection = lhsTokens.intersection(rhsTokens).count
+        let union = lhsTokens.union(rhsTokens).count
+        return Double(intersection) / Double(union)
+    }
+
+    private static func guidanceTokens(_ text: String) -> Set<String> {
+        let stopWords: Set<String> = ["a", "an", "the", "to", "of", "and", "or"]
+        return Set(text.split(separator: " ").compactMap { raw in
+            var token = String(raw)
+            if token.count > 4, token.hasSuffix("s") {
+                token.removeLast()
+            }
+            return stopWords.contains(token) ? nil : token
+        })
     }
 }

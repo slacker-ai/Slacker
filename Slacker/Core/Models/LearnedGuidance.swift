@@ -17,4 +17,22 @@ struct LearnedGuidance: Codable, Identifiable, Equatable, FetchableRecord, Persi
     var version: Int
     var createdAt: Date
     var decidedAt: Date?
+
+    init(
+        id: String,
+        channelID: String?,
+        text: String,
+        status: PatternStatus,
+        version: Int,
+        createdAt: Date,
+        decidedAt: Date? = nil
+    ) {
+        self.id = id
+        self.channelID = channelID
+        self.text = text
+        self.status = status
+        self.version = version
+        self.createdAt = createdAt
+        self.decidedAt = decidedAt
+    }
 }
