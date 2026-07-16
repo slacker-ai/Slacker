@@ -29,14 +29,44 @@ enum SlackManifest {
 
     /// The user-token scopes declared in the variant's manifest, parsed from the JSON.
     static func userScopes(for variant: ManifestVariant, bundle: Bundle = .main) throws -> [String] {
-        let raw = try json(for: variant, bundle: bundle)
-        guard let data = raw.data(using: .utf8),
-              let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+        let root = try object(for: variant, bundle: bundle)
+        guard
               let oauth = root["oauth_config"] as? [String: Any],
               let scopes = oauth["scopes"] as? [String: Any],
               let user = scopes["user"] as? [String] else {
             throw ManifestError.malformed
         }
         return user
+    }
+
+    static func socketModeEnabled(for variant: ManifestVariant, bundle: Bundle = .main) throws -> Bool {
+        let root = try object(for: variant, bundle: bundle)
+        guard let settings = root["settings"] as? [String: Any],
+              let enabled = settings["socket_mode_enabled"] as? Bool else {
+            throw ManifestError.malformed
+        }
+        return enabled
+    }
+
+    static func userEvents(for variant: ManifestVariant, bundle: Bundle = .main) throws -> [String] {
+        let root = try object(for: variant, bundle: bundle)
+        guard let settings = root["settings"] as? [String: Any],
+              let subscriptions = settings["event_subscriptions"] as? [String: Any],
+              let events = subscriptions["user_events"] as? [String] else {
+            throw ManifestError.malformed
+        }
+        return events
+    }
+
+    private static func object(
+        for variant: ManifestVariant,
+        bundle: Bundle
+    ) throws -> [String: Any] {
+        let raw = try json(for: variant, bundle: bundle)
+        guard let data = raw.data(using: .utf8),
+              let root = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw ManifestError.malformed
+        }
+        return root
     }
 }

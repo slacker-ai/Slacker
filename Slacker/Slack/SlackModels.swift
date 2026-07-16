@@ -68,13 +68,13 @@ struct ConversationsListResponse: SlackAPIResponse {
 }
 
 /// A Slack user as returned by `users.info`.
-struct SlackUser: Decodable, Equatable {
+struct SlackUser: Decodable, Equatable, Sendable {
     let id: String
     let name: String?
     let realName: String?
     let profile: Profile?
 
-    struct Profile: Decodable, Equatable {
+    struct Profile: Decodable, Equatable, Sendable {
         let displayName: String?
         let realName: String?
 
@@ -105,13 +105,13 @@ struct UsersInfoResponse: SlackAPIResponse {
 }
 
 /// A reaction on a message (`conversations.history` / `.replies`).
-struct SlackReaction: Codable, Equatable {
+struct SlackReaction: Codable, Equatable, Sendable {
     let name: String
     let count: Int
 }
 
 /// A message from `conversations.history` or `conversations.replies`.
-struct SlackMessage: Decodable, Equatable {
+struct SlackMessage: Decodable, Equatable, Sendable {
     let ts: String
     let user: String?
     let text: String?
@@ -130,6 +130,34 @@ struct SlackMessage: Decodable, Equatable {
 
     /// True when this message heads a thread with replies and needs a `replies` fetch (§6.2).
     var hasReplies: Bool { (replyCount ?? 0) > 0 }
+
+    var isMembershipNotification: Bool {
+        SlackSystemMessageFilter.isMembershipNotification(subtype: subtype, text: text)
+    }
+}
+
+/// Membership changes are Slack-generated channel history, not user-authored work. Keep
+/// them out of the local mirror so their rendered `<@user>` text cannot become a mention.
+enum SlackSystemMessageFilter {
+    private static let membershipSubtypes: Set<String> = [
+        "channel_join", "channel_leave", "group_join", "group_leave",
+    ]
+    private static let membershipTextFragments = [
+        " has joined the channel", " has left the channel",
+        " has joined the group", " has left the group",
+    ]
+
+    static func isMembershipNotification(subtype: String?, text: String?) -> Bool {
+        if let subtype, membershipSubtypes.contains(subtype) { return true }
+
+        // Older local rows predate subtype persistence. Slack renders these notices with
+        // a leading user mention, so this fallback cleans them without matching ordinary
+        // human sentences that merely discuss someone joining or leaving.
+        guard let text else { return false }
+        let normalized = text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return normalized.hasPrefix("<@")
+            && membershipTextFragments.contains(where: normalized.hasSuffix)
+    }
 }
 
 struct ConversationsHistoryResponse: SlackAPIResponse {
@@ -156,4 +184,12 @@ struct ConversationsRepliesResponse: SlackAPIResponse {
         case ok, error, messages
         case responseMetadata = "response_metadata"
     }
+}
+
+/// `apps.connections.open` — returns a short-lived WebSocket URL for Socket Mode.
+/// The URL is intentionally kept in memory only and must never be logged.
+struct AppsConnectionsOpenResponse: SlackAPIResponse {
+    let ok: Bool
+    let error: String?
+    let url: String?
 }

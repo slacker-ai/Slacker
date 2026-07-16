@@ -188,4 +188,25 @@ final class RuleEngineTests: XCTestCase {
         let bank = LearnedPhraseBank(phrasesByBucket: [.blocker: ["broken"]])
         XCTAssertEqual(RuleEngine(learned: bank).classify(text: "the build is broken").messageClass, .contextOnly)
     }
+
+    // MARK: - Terminal-thread regex reopening
+
+    func testReopenRegexRecognizesRegressionLanguage() {
+        let detector = ReopenSignalDetector()
+        XCTAssertEqual(detector.classify(text: "this is still failing").messageClass, .blocker)
+        XCTAssertEqual(detector.classify(text: "the outage is back").messageClass, .blocker)
+        XCTAssertEqual(detector.classify(text: "this was never actually fixed").messageClass, .blocker)
+        XCTAssertEqual(detector.classify(text: "the issue is affecting prod").messageClass, .blocker)
+    }
+
+    func testReopenRegexRecognizesNewAskAndIgnoresContext() {
+        let detector = ReopenSignalDetector()
+        XCTAssertEqual(detector.classify(text: "could someone take a look?").messageClass, .openQuestion)
+        XCTAssertEqual(detector.classify(text: "any update here?").messageClass, .openQuestion)
+        XCTAssertEqual(detector.classify(text: "thanks again for the help").messageClass, .contextOnly)
+        XCTAssertEqual(
+            detector.classify(text: "logs:\n```\nthe outage is back\n```").messageClass,
+            .contextOnly
+        )
+    }
 }

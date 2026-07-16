@@ -19,11 +19,13 @@ final class ResolutionDetectorTests: XCTestCase {
         user: String,
         text: String,
         reactionsJSON: String? = nil,
+        openReactionObservedAt: Date? = nil,
         resolvedReactionObservedAt: Date? = nil
     ) throws {
         try db.dbWriter.write { dbc in
             try Message(channelID: "C1", ts: ts, threadTS: ts, userID: user, text: text,
                         reactionsJSON: reactionsJSON,
+                        openReactionObservedAt: openReactionObservedAt,
                         resolvedReactionObservedAt: resolvedReactionObservedAt,
                         ingestedAt: fixedNow).insert(dbc)
         }
@@ -36,11 +38,13 @@ final class ResolutionDetectorTests: XCTestCase {
         user: String,
         text: String,
         reactionsJSON: String? = nil,
+        openReactionObservedAt: Date? = nil,
         resolvedReactionObservedAt: Date? = nil
     ) throws {
         try db.dbWriter.write { dbc in
             try Message(channelID: "C1", ts: ts, threadTS: root, userID: user, text: text,
                         reactionsJSON: reactionsJSON,
+                        openReactionObservedAt: openReactionObservedAt,
                         resolvedReactionObservedAt: resolvedReactionObservedAt,
                         ingestedAt: fixedNow).insert(dbc)
         }
@@ -66,7 +70,7 @@ final class ResolutionDetectorTests: XCTestCase {
         try addReply(db, ts: "101.0", root: "100.0", user: "U2", text: "sure, will check")
         try addItem(db, root: "100.0", type: .missedFollowup)
 
-        try await detector(db).resolveOpenItems()
+        try await detector(db).resolveChangedRoots(["C1": ["100.0"]])
 
         let item = try await db.dbWriter.read { try Item.fetchOne($0, key: "item-100.0") }
         XCTAssertEqual(item?.state, .surfaced, "a bare reply should not auto-close a question")
@@ -78,7 +82,7 @@ final class ResolutionDetectorTests: XCTestCase {
         try addReply(db, ts: "101.0", root: "100.0", user: "U2", text: "paging now, adding the dashboard link here")
         try addItem(db, root: "100.0", type: .missedFollowup)
 
-        try await detector(db).resolveOpenItems()
+        try await detector(db).resolveChangedRoots(["C1": ["100.0"]])
 
         let item = try await db.dbWriter.read { try Item.fetchOne($0, key: "item-100.0") }
         XCTAssertEqual(item?.state, .resolved)
@@ -91,7 +95,7 @@ final class ResolutionDetectorTests: XCTestCase {
         try addReply(db, ts: "101.0", root: "100.0", user: "U2", text: "yep, fixed it")
         try addItem(db, root: "100.0", type: .missedFollowup)
 
-        try await detector(db).resolveOpenItems()
+        try await detector(db).resolveChangedRoots(["C1": ["100.0"]])
 
         let item = try await db.dbWriter.read { try Item.fetchOne($0, key: "item-100.0") }
         XCTAssertEqual(item?.state, .resolved)
@@ -107,7 +111,7 @@ final class ResolutionDetectorTests: XCTestCase {
         try addReply(db, ts: "104.0", root: "100.0", user: "U3", text: "thanks")
         try addItem(db, root: "100.0", type: .missedFollowup)
 
-        try await detector(db).resolveOpenItems()
+        try await detector(db).resolveChangedRoots(["C1": ["100.0"]])
 
         let item = try await db.dbWriter.read { try Item.fetchOne($0, key: "item-100.0") }
         XCTAssertEqual(item?.state, .surfaced, "\"can be done\" is a proposed action, not a completed one")
@@ -120,7 +124,7 @@ final class ResolutionDetectorTests: XCTestCase {
         try addReply(db, ts: "101.0", root: "100.0", user: "U2", text: "logs from the run:\n```fixed\n✅\n```")
         try addItem(db, root: "100.0", type: .missedFollowup)
 
-        try await detector(db).resolveOpenItems()
+        try await detector(db).resolveChangedRoots(["C1": ["100.0"]])
 
         let item = try await db.dbWriter.read { try Item.fetchOne($0, key: "item-100.0") }
         XCTAssertEqual(item?.state, .surfaced)
@@ -134,7 +138,7 @@ final class ResolutionDetectorTests: XCTestCase {
         try addReply(db, ts: "102.0", root: "100.0", user: "U1", text: "it's still failing, can someone look?")
         try addItem(db, root: "100.0", type: .stale)
 
-        try await detector(db).resolveOpenItems()
+        try await detector(db).resolveChangedRoots(["C1": ["100.0"]])
 
         let item = try await db.dbWriter.read { try Item.fetchOne($0, key: "item-100.0") }
         XCTAssertEqual(item?.state, .surfaced, "a newer actionable reply must beat an older close signal")
@@ -147,7 +151,7 @@ final class ResolutionDetectorTests: XCTestCase {
         try addReply(db, ts: "101.0", root: "100.0", user: "U2", text: "oof, that's annoying")
         try addItem(db, root: "100.0", type: .stale)
 
-        try await detector(db).resolveOpenItems()
+        try await detector(db).resolveChangedRoots(["C1": ["100.0"]])
 
         let item = try await db.dbWriter.read { try Item.fetchOne($0, key: "item-100.0") }
         XCTAssertEqual(item?.state, .surfaced, "a bare reply must not resolve a blocker/decision")
@@ -159,7 +163,7 @@ final class ResolutionDetectorTests: XCTestCase {
                     reactionsJSON: #"[{"name":"white_check_mark","count":1}]"#)
         try addItem(db, root: "100.0", type: .stale)
 
-        try await detector(db).resolveOpenItems()
+        try await detector(db).resolveChangedRoots(["C1": ["100.0"]])
 
         let item = try await db.dbWriter.read { try Item.fetchOne($0, key: "item-100.0") }
         XCTAssertEqual(item?.state, .resolved)
@@ -173,7 +177,7 @@ final class ResolutionDetectorTests: XCTestCase {
         try addReply(db, ts: "101.0", root: "100.0", user: "U1", text: "it's still failing, can someone look?")
         try addItem(db, root: "100.0", type: .stale)
 
-        try await detector(db).resolveOpenItems()
+        try await detector(db).resolveChangedRoots(["C1": ["100.0"]])
 
         let item = try await db.dbWriter.read { try Item.fetchOne($0, key: "item-100.0") }
         XCTAssertEqual(item?.state, .surfaced, "a newer actionable reply must beat an older resolved reaction")
@@ -188,7 +192,34 @@ final class ResolutionDetectorTests: XCTestCase {
         try addReply(db, ts: "101.0", root: "100.0", user: "U1", text: "it's still failing, can someone look?")
         try addItem(db, root: "100.0", type: .stale)
 
-        try await detector(db).resolveOpenItems()
+        try await detector(db).resolveChangedRoots(["C1": ["100.0"]])
+
+        let item = try await db.dbWriter.read { try Item.fetchOne($0, key: "item-100.0") }
+        XCTAssertEqual(item?.state, .resolved)
+        XCTAssertEqual(item?.resolutionReason, .reacted)
+    }
+
+    func testNewCheckReactionBeatsOlderEyesReactionOnSameMessage() async throws {
+        let db = try makeDB()
+        try addRoot(
+            db,
+            ts: "100.0",
+            user: "U1",
+            text: "blocked on the API key",
+            reactionsJSON: #"[{"name":"eyes","count":1},{"name":"white_check_mark","count":1}]"#,
+            openReactionObservedAt: fixedNow.addingTimeInterval(-10),
+            resolvedReactionObservedAt: fixedNow.addingTimeInterval(1)
+        )
+        try addReply(
+            db,
+            ts: "101.0",
+            root: "100.0",
+            user: "U1",
+            text: "it's still failing, can someone look?"
+        )
+        try addItem(db, root: "100.0", type: .stale)
+
+        try await detector(db).resolveChangedRoots(["C1": ["100.0"]])
 
         let item = try await db.dbWriter.read { try Item.fetchOne($0, key: "item-100.0") }
         XCTAssertEqual(item?.state, .resolved)
@@ -201,7 +232,7 @@ final class ResolutionDetectorTests: XCTestCase {
         try addReply(db, ts: "101.0", root: "100.0", user: "U2", text: "✅ confirmed")
         try addItem(db, root: "100.0", type: .missedFollowup)
 
-        try await detector(db).resolveOpenItems()
+        try await detector(db).resolveChangedRoots(["C1": ["100.0"]])
 
         let item = try await db.dbWriter.read { try Item.fetchOne($0, key: "item-100.0") }
         XCTAssertEqual(item?.state, .resolved)
@@ -215,7 +246,7 @@ final class ResolutionDetectorTests: XCTestCase {
                      reactionsJSON: #"[{"name":"thumbsup","count":1}]"#)
         try addItem(db, root: "100.0", type: .missedFollowup)
 
-        try await detector(db).resolveOpenItems()
+        try await detector(db).resolveChangedRoots(["C1": ["100.0"]])
 
         let item = try await db.dbWriter.read { try Item.fetchOne($0, key: "item-100.0") }
         XCTAssertEqual(item?.state, .resolved)
@@ -228,7 +259,7 @@ final class ResolutionDetectorTests: XCTestCase {
                     reactionsJSON: #"[{"name":"eyes","count":1}]"#)
         try addItem(db, root: "100.0", type: .missedFollowup)
 
-        try await detector(db).resolveOpenItems()
+        try await detector(db).resolveChangedRoots(["C1": ["100.0"]])
 
         let item = try await db.dbWriter.read { try Item.fetchOne($0, key: "item-100.0") }
         XCTAssertEqual(item?.state, .surfaced)
@@ -241,7 +272,7 @@ final class ResolutionDetectorTests: XCTestCase {
         try addReply(db, ts: "101.0", root: "100.0", user: "U2", text: "not fixed yet 👀")
         try addItem(db, root: "100.0", type: .stale)
 
-        try await detector(db).resolveOpenItems()
+        try await detector(db).resolveChangedRoots(["C1": ["100.0"]])
 
         let item = try await db.dbWriter.read { try Item.fetchOne($0, key: "item-100.0") }
         XCTAssertEqual(item?.state, .surfaced)
@@ -254,7 +285,7 @@ final class ResolutionDetectorTests: XCTestCase {
         try addReply(db, ts: "101.0", root: "100.0", user: "U1", text: "done, shipped it")
         try addItem(db, root: "100.0", type: .stale)
 
-        try await detector(db).resolveOpenItems()
+        try await detector(db).resolveChangedRoots(["C1": ["100.0"]])
 
         let item = try await db.dbWriter.read { try Item.fetchOne($0, key: "item-100.0") }
         XCTAssertEqual(item?.resolutionReason, .stated)
@@ -265,7 +296,7 @@ final class ResolutionDetectorTests: XCTestCase {
         try addRoot(db, ts: "100.0", user: "U1", text: "<@U2> can you confirm?")
         try addItem(db, root: "100.0", type: .missedFollowup)
 
-        try await detector(db).resolveOpenItems()
+        try await detector(db).resolveChangedRoots(["C1": ["100.0"]])
 
         let item = try await db.dbWriter.read { try Item.fetchOne($0, key: "item-100.0") }
         XCTAssertEqual(item?.state, .surfaced, "no resolution signal → stays surfaced")

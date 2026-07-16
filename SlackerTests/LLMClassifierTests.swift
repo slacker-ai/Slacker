@@ -20,6 +20,13 @@ final class StubLLMClient: LLMClient, @unchecked Sendable {
 }
 
 final class LLMClassifierParseTests: XCTestCase {
+    func testBasePromptTreatsSlackMembershipEventsAsContextOnly() {
+        XCTAssertTrue(LLMClassifier.baseSystem.contains(
+            "Slack system join/leave notifications are membership events"
+        ))
+        XCTAssertTrue(LLMClassifier.baseSystem.contains("Always classify them as contextOnly"))
+    }
+
     func testParsesStrictJSON() {
         let v = LLMClassifier.parse(#"{"class":"blocker","confidence":0.9}"#)
         XCTAssertEqual(v?.messageClass, .blocker)
@@ -74,6 +81,26 @@ final class LLMDetectionIntegrationTests: XCTestCase {
         try await svc.detectWatchedChannels()
 
         XCTAssertEqual(stub.callCount, 0, "LLM must not be called when rules are confident")
+    }
+
+    func testApprovedGuidanceCanSuppressSimilarHighConfidenceRuleHit() async throws {
+        let database = try db()
+        try insert(database, ts: "100.0", user: "U1", text: "Did anyone record todays meeting?")
+        let store = PatternStore(database: database)
+        try await store.saveActiveGuidanceDocument(
+            "Treat general questions asking whether anyone recorded a meeting as context-only."
+        )
+        let stub = StubLLMClient(response: #"{"class":"contextOnly","confidence":0.95}"#)
+        var svc = DetectionService(database: database, makeID: { "id" })
+        svc.llmClassifier = LLMClassifier(client: stub)
+        svc.patternStore = store
+
+        try await svc.detectWatchedChannels()
+
+        XCTAssertEqual(stub.callCount, 1, "approved guidance must review a surfaced built-in rule hit")
+        XCTAssertTrue(stub.lastRequest?.system.contains("questions asking whether anyone recorded a meeting") == true)
+        let itemCount = try await database.dbWriter.read { try Item.fetchCount($0) }
+        XCTAssertEqual(itemCount, 0, "the learned ignore guidance should suppress the semantically equivalent message")
     }
 
     func testLLMEscalationPromotesAmbiguousToSurfaced() async throws {

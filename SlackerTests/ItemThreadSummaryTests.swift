@@ -43,7 +43,7 @@ final class ItemThreadSummaryTests: XCTestCase {
         let stub = StubLLMClient(response: unresolvedJSON("U1 reported a build failure; U2 is investigating."))
         let svc = ItemThreadSummaryService(database: db, llm: stub, now: { self.fixedNow })
 
-        try await svc.analyzeOpenThreads()
+        try await svc.analyzeOpenThreads(rootsByChannel: ["C1": ["100.0"]])
 
         let item = try await db.dbWriter.read { try Item.fetchOne($0, key: "i1") }
         XCTAssertEqual(item?.threadSummary, "U1 reported a build failure; U2 is investigating.")
@@ -58,7 +58,7 @@ final class ItemThreadSummaryTests: XCTestCase {
         let stub = StubLLMClient(response: unresolvedJSON("checking"))
         let svc = ItemThreadSummaryService(database: db, llm: stub, now: { self.fixedNow })
 
-        try await svc.analyzeOpenThreads()
+        try await svc.analyzeOpenThreads(rootsByChannel: ["C1": ["100.0"]])
 
         XCTAssertTrue(stub.lastRequest?.user.contains("can someone check this?") == true)
         XCTAssertTrue(stub.lastRequest?.user.contains("looking now") == true)
@@ -71,9 +71,31 @@ final class ItemThreadSummaryTests: XCTestCase {
         let stub = StubLLMClient(response: unresolvedJSON("x"))
         let svc = ItemThreadSummaryService(database: db, llm: stub, now: { self.fixedNow })
 
-        try await svc.analyzeOpenThreads()
+        try await svc.analyzeOpenThreads(rootsByChannel: ["C1": ["100.0"]])
 
         XCTAssertEqual(stub.callCount, 0, "no replies → nothing to analyze")
+    }
+
+    func testAnalyzesOnlyExplicitlyChangedRoots() async throws {
+        let db = try makeDB()
+        try addReply(db, ts: "101.0", user: "U2", text: "looking into it")
+        try await db.dbWriter.write { dbc in
+            try Message(channelID: "C1", ts: "200.0", threadTS: "200.0", userID: "U1",
+                        text: "another blocker", reactionsJSON: nil, ingestedAt: self.fixedNow).insert(dbc)
+            try Message(channelID: "C1", ts: "201.0", threadTS: "200.0", userID: "U2",
+                        text: "another reply", reactionsJSON: nil, ingestedAt: self.fixedNow).insert(dbc)
+            try Item(id: "i2", channelID: "C1", rootMessageTS: "200.0", threadTS: "200.0",
+                     type: .stale, state: .surfaced, confidence: 0.9, createdAt: self.fixedNow,
+                     lastEvaluatedAt: self.fixedNow, snoozedUntil: nil, resolutionReason: nil).insert(dbc)
+        }
+        let stub = StubLLMClient(response: unresolvedJSON("changed root only"))
+        let svc = ItemThreadSummaryService(database: db, llm: stub, now: { self.fixedNow })
+
+        try await svc.analyzeOpenThreads(rootsByChannel: ["C1": ["100.0"]])
+
+        let untouched = try await db.dbWriter.read { try Item.fetchOne($0, key: "i2") }
+        XCTAssertEqual(stub.callCount, 1)
+        XCTAssertNil(untouched?.threadSummary)
     }
 
     func testDoesNotRegenerateWhenReplyCountUnchanged() async throws {
@@ -82,8 +104,8 @@ final class ItemThreadSummaryTests: XCTestCase {
         let stub = StubLLMClient(response: unresolvedJSON("summary"))
         let svc = ItemThreadSummaryService(database: db, llm: stub, now: { self.fixedNow })
 
-        try await svc.analyzeOpenThreads()
-        try await svc.analyzeOpenThreads()
+        try await svc.analyzeOpenThreads(rootsByChannel: ["C1": ["100.0"]])
+        try await svc.analyzeOpenThreads(rootsByChannel: ["C1": ["100.0"]])
 
         XCTAssertEqual(stub.callCount, 1, "re-analyzes only when the reply count grows")
     }
@@ -99,7 +121,7 @@ final class ItemThreadSummaryTests: XCTestCase {
         )
         let svc = ItemThreadSummaryService(database: db, llm: stub, now: { self.fixedNow })
 
-        try await svc.analyzeOpenThreads()
+        try await svc.analyzeOpenThreads(rootsByChannel: ["C1": ["100.0"]])
 
         let item = try await db.dbWriter.read { try Item.fetchOne($0, key: "i1") }
         XCTAssertEqual(item?.state, .resolved, "LLM should auto-close a clearly-resolved long thread")
@@ -114,7 +136,7 @@ final class ItemThreadSummaryTests: XCTestCase {
         let stub = StubLLMClient(response: #"{"summary":"unclear","resolved":true,"confidence":0.5}"#)
         let svc = ItemThreadSummaryService(database: db, llm: stub, now: { self.fixedNow })
 
-        try await svc.analyzeOpenThreads()
+        try await svc.analyzeOpenThreads(rootsByChannel: ["C1": ["100.0"]])
 
         let item = try await db.dbWriter.read { try Item.fetchOne($0, key: "i1") }
         XCTAssertEqual(item?.state, .surfaced, "low-confidence resolution must not auto-close")
@@ -126,7 +148,7 @@ final class ItemThreadSummaryTests: XCTestCase {
         let stub = StubLLMClient(response: #"{"summary":"cleared cache and green now","resolved":true,"confidence":0.8}"#)
         let svc = ItemThreadSummaryService(database: db, llm: stub, now: { self.fixedNow })
 
-        try await svc.analyzeOpenThreads()
+        try await svc.analyzeOpenThreads(rootsByChannel: ["C1": ["100.0"]])
 
         let item = try await db.dbWriter.read { try Item.fetchOne($0, key: "i1") }
         XCTAssertEqual(item?.state, .resolved, "80% confidence is enough to auto-close")
@@ -139,7 +161,7 @@ final class ItemThreadSummaryTests: XCTestCase {
         let stub = StubLLMClient(response: #"{"summary":"still investigating","resolved":false,"confidence":0.86}"#)
         let svc = ItemThreadSummaryService(database: db, llm: stub, now: { self.fixedNow })
 
-        try await svc.analyzeOpenThreads()
+        try await svc.analyzeOpenThreads(rootsByChannel: ["C1": ["100.0"]])
 
         let item = try await db.dbWriter.read { try Item.fetchOne($0, key: "i1") }
         XCTAssertEqual(item?.state, .surfaced, "confidence applies to the unresolved verdict too")
@@ -153,7 +175,7 @@ final class ItemThreadSummaryTests: XCTestCase {
         let stub = StubLLMClient(response: #"{"summary":"U3 asks for help running the standby DR test before return.","resolved":true,"confidence":0.91}"#)
         let svc = ItemThreadSummaryService(database: db, llm: stub, now: { self.fixedNow })
 
-        try await svc.analyzeOpenThreads()
+        try await svc.analyzeOpenThreads(rootsByChannel: ["C1": ["100.0"]])
 
         let item = try await db.dbWriter.read { try Item.fetchOne($0, key: "i1") }
         XCTAssertEqual(item?.state, .surfaced, "a fresh actionable reply must prevent LLM inferred auto-close")
@@ -168,7 +190,7 @@ final class ItemThreadSummaryTests: XCTestCase {
         let stub = StubLLMClient(response: #"{"summary":"resolved by clearing cache","resolved":true,"confidence":0.95}"#)
         let svc = ItemThreadSummaryService(database: db, llm: stub, now: { self.fixedNow })
 
-        try await svc.analyzeOpenThreads()
+        try await svc.analyzeOpenThreads(rootsByChannel: ["C1": ["100.0"]])
 
         let item = try await db.dbWriter.read { try Item.fetchOne($0, key: "i1") }
         XCTAssertEqual(item?.state, .resolved, "a single real solution closes the item")
@@ -182,7 +204,7 @@ final class ItemThreadSummaryTests: XCTestCase {
         let stub = StubLLMClient(response: #"{"summary":"U2 is paging on-call and adding the dashboard link.","resolved":true,"confidence":0.86}"#)
         let svc = ItemThreadSummaryService(database: db, llm: stub, now: { self.fixedNow })
 
-        try await svc.analyzeOpenThreads()
+        try await svc.analyzeOpenThreads(rootsByChannel: ["C1": ["100.0"]])
 
         let item = try await db.dbWriter.read { try Item.fetchOne($0, key: "i1") }
         XCTAssertEqual(item?.state, .resolved, "doing the requested ping resolves the coordination ask")
@@ -204,7 +226,7 @@ final class ItemThreadSummaryTests: XCTestCase {
         let stub = StubLLMClient(response: unresolvedJSON("summary"))
         let svc = ItemThreadSummaryService(database: db, llm: stub, patternStore: store, now: { self.fixedNow })
 
-        try await svc.analyzeOpenThreads()
+        try await svc.analyzeOpenThreads(rootsByChannel: ["C1": ["100.0"]])
 
         XCTAssertTrue(stub.lastRequest?.system.contains("Approved workspace-specific guidance") == true)
         XCTAssertTrue(stub.lastRequest?.system.contains("dashboard linked") == true)
@@ -217,7 +239,7 @@ final class ItemThreadSummaryTests: XCTestCase {
         let stub = StubLLMClient(response: #"{"summary":"U2 investigating","resolved":false,"confidence":0.3}"#)
         let svc = ItemThreadSummaryService(database: db, llm: stub, now: { self.fixedNow })
 
-        try await svc.analyzeOpenThreads()
+        try await svc.analyzeOpenThreads(rootsByChannel: ["C1": ["100.0"]])
 
         let item = try await db.dbWriter.read { try Item.fetchOne($0, key: "i1") }
         XCTAssertEqual(item?.state, .surfaced, "a non-solution reply must not close the item")
@@ -232,7 +254,7 @@ final class ItemThreadSummaryTests: XCTestCase {
         let stub = StubLLMClient(response: "I can't produce JSON")
         let svc = ItemThreadSummaryService(database: db, llm: stub, now: { self.fixedNow })
 
-        try await svc.analyzeOpenThreads()
+        try await svc.analyzeOpenThreads(rootsByChannel: ["C1": ["100.0"]])
 
         let item = try await db.dbWriter.read { try Item.fetchOne($0, key: "i1") }
         XCTAssertEqual(item?.state, .surfaced)

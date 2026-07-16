@@ -16,6 +16,7 @@ struct ProcessCLIRunner: CLIRunner {
             process.executableURL = URL(fileURLWithPath: executable)
             process.arguments = arguments
             process.environment = Self.childEnvironment(executable: executable)
+            process.currentDirectoryURL = Self.childWorkingDirectory()
 
             let stdoutPipe = Pipe()
             let stderrPipe = Pipe()
@@ -48,6 +49,27 @@ struct ProcessCLIRunner: CLIRunner {
                 stdinPipe.fileHandleForWriting.write(Data(stdin.utf8))
                 stdinPipe.fileHandleForWriting.closeFile()
             }
+        }
+    }
+
+    /// Keep subprocesses out of the app/repo launch directory. In development the app is
+    /// often launched from a path under ~/Documents, and CLI tools may inspect cwd on
+    /// startup, causing macOS protected-folder prompts that Slacker does not need.
+    private static func childWorkingDirectory(fileManager fm: FileManager = .default) -> URL {
+        do {
+            let appSupport = try fm.url(
+                for: .applicationSupportDirectory,
+                in: .userDomainMask,
+                appropriateFor: nil,
+                create: true
+            )
+            let dir = appSupport
+                .appendingPathComponent("Slacker", isDirectory: true)
+                .appendingPathComponent("CLIWorkdir", isDirectory: true)
+            try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+            return dir
+        } catch {
+            return fm.temporaryDirectory
         }
     }
 

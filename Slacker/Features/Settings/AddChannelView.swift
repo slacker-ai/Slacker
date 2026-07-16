@@ -1,8 +1,8 @@
 import SwiftUI
 
 /// Sheet for adding channels to watch. Lists the channels you're a member of that
-/// aren't watched yet, grouped by workspace, each with an "Add" action. Refresh pulls
-/// newly-joined channels from Slack (a user token can only see channels you're in).
+/// aren't watched yet, grouped by workspace, each with an "Add" action. The catalog
+/// lookup pulls newly joined channels from Slack (a user token sees channels you're in).
 struct AddChannelView: View {
     @Bindable var model: SettingsModel
 
@@ -12,11 +12,11 @@ struct AddChannelView: View {
                 Text("Add channel").font(.headline)
                 Spacer()
                 Button {
-                    Task { await model.refreshChannels() }
+                    Task { await model.findNewChannels() }
                 } label: {
-                    Label("Refresh", systemImage: "arrow.clockwise")
+                    Label("Find new channels", systemImage: "magnifyingglass")
                 }
-                .disabled(model.isRefreshingChannels)
+                .disabled(model.isFindingChannels)
                 Button("Done") { model.isShowingAddChannel = false }
                     .keyboardShortcut(.defaultAction)
             }
@@ -27,7 +27,7 @@ struct AddChannelView: View {
                 VStack(spacing: 10) {
                     Image(systemName: "checkmark.circle").font(.system(size: 36)).foregroundStyle(.secondary)
                     Text("All your channels are added.").font(.headline)
-                    Text("Joined a new channel in Slack? Hit Refresh to pull it in.")
+                    Text("Joined a new channel in Slack? Choose Find new channels to pull it in.")
                         .font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)

@@ -1,17 +1,19 @@
 import SwiftUI
 
-/// Settings screen for the self-evolving loop (§7.5). Approvals live primarily on the
-/// main board's Evolution column; Settings keeps the manual editor, active phrases,
-/// guidance document, and revert controls.
+/// Settings editor for automatically learned phrases and global/channel prompt overlays.
 struct LearnedPatternsView: View {
     @Bindable var model: LearnedPatternsModel
     @State private var isAddingPhrase = false
+    @State private var areApprovedPhrasesExpanded = false
+    @State private var channelSearchText = ""
+    @State private var expandedGuidanceChannelID: String?
 
     var body: some View {
         Form {
             introSection
             approvedPhrasesSection
             activeGuidanceSection
+            if !model.channels.isEmpty { channelGuidanceSection }
             if model.hasAnything { revertSection }
         }
         .formStyle(.grouped)
@@ -21,7 +23,7 @@ struct LearnedPatternsView: View {
 
     private var introSection: some View {
         Section {
-            Text("Manage the approved phrases and AI guidance that affect detection.")
+            Text("User actions update these prompts automatically. You can edit every active document directly; changes save automatically.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
             if !model.hasAnything {
@@ -36,38 +38,55 @@ struct LearnedPatternsView: View {
 
     private var approvedPhrasesSection: some View {
         Section {
-            if isAddingPhrase {
-                addPhraseForm
-                if !model.approvedPatterns.isEmpty { Divider() }
-            }
+            DisclosureGroup(isExpanded: $areApprovedPhrasesExpanded) {
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack {
+                        Spacer()
+                        Button {
+                            withAnimation { isAddingPhrase.toggle() }
+                        } label: {
+                            Label(
+                                isAddingPhrase ? "Cancel" : "Add phrase",
+                                systemImage: isAddingPhrase ? "xmark" : "plus"
+                            )
+                        }
+                        .buttonStyle(.borderless)
+                    }
 
-            if model.approvedPatterns.isEmpty {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("No approved phrases yet.")
-                        .foregroundStyle(.secondary)
-                    Text("Add a specific multi-word phrase to extend a detection type immediately.")
+                    if isAddingPhrase {
+                        addPhraseForm
+                        if !model.approvedPatterns.isEmpty { Divider() }
+                    }
+
+                    if model.approvedPatterns.isEmpty {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("No approved phrases yet.")
+                                .foregroundStyle(.secondary)
+                            Text("Add a specific multi-word phrase to extend a detection type immediately.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(.vertical, 4)
+                    } else {
+                        ForEach(model.approvedPatterns) { pattern in
+                            approvedPhraseRow(pattern)
+                        }
+                    }
+
+                    Text("Phrases go live immediately after saving. Raw regex is intentionally not supported.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
-                .padding(.vertical, 4)
-            } else {
-                ForEach(model.approvedPatterns) { pattern in
-                    approvedPhraseRow(pattern)
+                .padding(.top, 8)
+            } label: {
+                HStack {
+                    Text("Approved phrases")
+                    Spacer()
+                    Text("\(model.approvedPatterns.count)")
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
                 }
             }
-        } header: {
-            HStack {
-                Text("Approved phrases")
-                Spacer()
-                Button {
-                    withAnimation { isAddingPhrase.toggle() }
-                } label: {
-                    Label(isAddingPhrase ? "Cancel" : "Add phrase", systemImage: isAddingPhrase ? "xmark" : "plus")
-                }
-                .textCase(nil)
-            }
-        } footer: {
-            Text("Phrases go live immediately after saving. Raw regex is intentionally not supported.")
         }
     }
 
@@ -171,9 +190,9 @@ struct LearnedPatternsView: View {
     }
 
     private var activeGuidanceSection: some View {
-        Section("Active AI guidance document") {
+        Section("Global AI guidance document") {
             VStack(alignment: .leading, spacing: 8) {
-                Text("This is the single guidance document appended to AI classification and thread-resolution prompts. Edit it directly; proposed guidance can append new rules here. Changes save automatically.")
+                Text("Applied to every Slack channel before its channel-specific guidance.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 TextEditor(text: $model.activeGuidanceDraft)
@@ -192,13 +211,105 @@ struct LearnedPatternsView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     Spacer()
+                    Text("\(model.activeGuidanceDraft.count) characters")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
+            }
+        }
+    }
+
+    private var channelGuidanceSection: some View {
+        Section {
+            VStack(alignment: .leading, spacing: 8) {
+                ChannelSearchField(text: $channelSearchText)
+                    .frame(height: 24)
+
+                if filteredGuidanceChannels.isEmpty {
+                    Text("No channels match “\(channelSearchText)”.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .padding(.vertical, 6)
+                } else {
+                    ForEach(filteredGuidanceChannels) { channel in
+                        DisclosureGroup(isExpanded: guidanceExpansionBinding(for: channel.id)) {
+                            channelGuidanceEditor
+                                .padding(.top, 8)
+                        } label: {
+                            Label(channel.name, systemImage: channel.isPrivate ? "lock.fill" : "number")
+                                .font(.body.weight(.medium))
+                        }
+                    }
+                }
+            }
+        } header: {
+            Text("Channel AI guidance documents")
+        } footer: {
+            Text("Expand a channel to view or edit its guidance. Only one channel can be edited at a time.")
+        }
+    }
+
+    private var filteredGuidanceChannels: [Channel] {
+        let query = channelSearchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        return model.channels
+            .filter {
+                query.isEmpty
+                    || $0.name.localizedCaseInsensitiveContains(query)
+                    || "#\($0.name)".localizedCaseInsensitiveContains(query)
+            }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    private func guidanceExpansionBinding(for channelID: String) -> Binding<Bool> {
+        Binding(
+            get: { expandedGuidanceChannelID == channelID },
+            set: { isExpanded in
+                if isExpanded {
+                    expandedGuidanceChannelID = channelID
+                    Task { await model.selectGuidanceChannel(channelID) }
+                } else if expandedGuidanceChannelID == channelID {
+                    expandedGuidanceChannelID = nil
+                }
+            }
+        )
+    }
+
+    private var channelGuidanceEditor: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            TextEditor(text: $model.channelGuidanceDraft)
+                .font(.system(.body, design: .monospaced))
+                .padding(8)
+                .frame(minHeight: 180)
+                .overlay(RoundedRectangle(cornerRadius: 6).stroke(.quaternary))
+                .onChange(of: model.channelGuidanceDraft) { _, _ in
+                    model.channelGuidanceDidChange()
+                }
+
+            HStack {
+                Label(model.channelGuidanceSaveStatus, systemImage: channelGuidanceStatusIcon)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Text("\(model.effectiveLearnedCharacterCount) effective learned characters")
+                    .font(.caption)
+                    .foregroundStyle(
+                        model.effectiveLearnedCharacterCount >= PatternEvolutionService.condensationThreshold
+                            ? .orange : .secondary
+                    )
             }
         }
     }
 
     private var activeGuidanceStatusIcon: String {
         switch model.activeGuidanceSaveStatus {
+        case "Saved": "checkmark.circle"
+        case "Save failed": "exclamationmark.triangle"
+        default: "arrow.triangle.2.circlepath"
+        }
+    }
+
+    private var channelGuidanceStatusIcon: String {
+        switch model.channelGuidanceSaveStatus {
         case "Saved": "checkmark.circle"
         case "Save failed": "exclamationmark.triangle"
         default: "arrow.triangle.2.circlepath"
@@ -213,6 +324,50 @@ struct LearnedPatternsView: View {
                 Label("Revert all learned patterns", systemImage: "arrow.uturn.backward")
             }
             .help("Retire every approved phrase and guidance block, restoring the built-in defaults.")
+        }
+    }
+}
+
+/// `NSSearchField` behaves reliably inside a grouped macOS `Form` and sends an update
+/// for every keystroke, including changes made with its built-in clear button.
+private struct ChannelSearchField: NSViewRepresentable {
+    @Binding var text: String
+
+    func makeNSView(context: Context) -> NSSearchField {
+        let field = NSSearchField()
+        field.placeholderString = "Filter channels"
+        field.stringValue = text
+        field.sendsSearchStringImmediately = true
+        field.delegate = context.coordinator
+        field.target = context.coordinator
+        field.action = #selector(Coordinator.searchFieldChanged(_:))
+        return field
+    }
+
+    func updateNSView(_ field: NSSearchField, context: Context) {
+        if field.stringValue != text {
+            field.stringValue = text
+        }
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(text: $text)
+    }
+
+    final class Coordinator: NSObject, NSSearchFieldDelegate {
+        @Binding private var text: String
+
+        init(text: Binding<String>) {
+            _text = text
+        }
+
+        func controlTextDidChange(_ notification: Notification) {
+            guard let field = notification.object as? NSSearchField else { return }
+            text = field.stringValue
+        }
+
+        @objc func searchFieldChanged(_ field: NSSearchField) {
+            text = field.stringValue
         }
     }
 }
@@ -274,194 +429,6 @@ private struct LeftAlignedPhraseField: NSViewRepresentable {
             guard let field = notification.object as? NSTextField else { return }
             text = field.stringValue
             onEdit()
-        }
-    }
-}
-
-/// Main-board review surface for pending self-evolution proposals. Each proposed phrase
-/// or guidance block stays independent so approval remains a deliberate triage action.
-struct EvolutionApprovalView: View {
-    @Bindable var model: LearnedPatternsModel
-    var showsNavigationChrome = true
-    var onOpenSettings: (() -> Void)?
-
-    var body: some View {
-        Group {
-            if model.pendingProposalCount == 0 {
-                VStack(spacing: 12) {
-                    Image(systemName: "wand.and.stars")
-                        .font(.system(size: 42))
-                        .foregroundStyle(Brand.primary)
-                    Text("No evolution pending")
-                        .font(Brand.display(20))
-                    Text("New learned phrases and AI guidance will appear here for approval.")
-                        .multilineTextAlignment(.center)
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 20)
-                    managePhrasesButton
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 12) {
-                        managementControls
-                        bulkControls
-                        ForEach(model.proposedPatterns) { pattern in
-                            phraseCard(pattern)
-                        }
-                        ForEach(model.proposedGuidance) { guidance in
-                            guidanceCard(guidance)
-                        }
-                    }
-                    .padding(16)
-                }
-            }
-        }
-        .navigationTitle(showsNavigationChrome ? "Evolution" : "")
-        .task { await model.load() }
-    }
-
-    @ViewBuilder
-    private var managePhrasesButton: some View {
-        if let onOpenSettings {
-            Button {
-                onOpenSettings()
-            } label: {
-                Label("Manage phrases", systemImage: "slider.horizontal.3")
-            }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
-        }
-    }
-
-    private var managementControls: some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Approvals")
-                    .font(.caption.weight(.semibold))
-                Text("Detection changes stay inert until approved here.")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-            Spacer()
-            managePhrasesButton
-        }
-        .padding(12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 8).fill(Color.secondary.opacity(0.06)))
-    }
-
-    private var bulkControls: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
-                Button {
-                    Task { await model.approveSafePhrases() }
-                } label: {
-                    Label("Approve safe phrases", systemImage: "checkmark.seal")
-                }
-                .disabled(model.safeProposedPhraseCount == 0)
-                .help("Approves only phrase proposals whose offline precision estimate does not regress.")
-
-                Button(role: .destructive) {
-                    Task { await model.rejectAllProposals() }
-                } label: {
-                    Label("Reject all", systemImage: "xmark.circle")
-                }
-            }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
-
-            Text(model.safePhraseBulkStatus)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-        }
-        .padding(12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 8).fill(Color.secondary.opacity(0.06)))
-    }
-
-    private func phraseCard(_ pattern: LearnedPattern) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text("\"\(pattern.phrase)\"")
-                    .font(.body.weight(.semibold))
-                    .fixedSize(horizontal: false, vertical: true)
-                Spacer(minLength: 8)
-                Text(pattern.bucket.displayName)
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(Brand.primary)
-                    .lineLimit(1)
-            }
-
-            Label(model.displayName(forChannelID: pattern.channelID), systemImage: "number")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-
-            if let rationale = pattern.rationale, !rationale.isEmpty {
-                Text(rationale)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            deltaView(for: pattern)
-
-            HStack(spacing: 8) {
-                Button("Approve") { Task { await model.approve(pattern) } }
-                    .buttonStyle(.borderedProminent)
-                Button("Reject") { Task { await model.reject(pattern) } }
-                    .buttonStyle(.bordered)
-            }
-            .controlSize(.small)
-        }
-        .brandCard(tint: Brand.primary)
-    }
-
-    private func guidanceCard(_ guidance: LearnedGuidance) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
-                Label(model.displayName(forChannelID: guidance.channelID), systemImage: "text.badge.plus")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                Spacer()
-                Text("AI guidance")
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(Brand.mention)
-            }
-
-            Text(guidance.text)
-                .font(.callout)
-                .fixedSize(horizontal: false, vertical: true)
-
-            HStack(spacing: 8) {
-                Button("Append") { Task { await model.approve(guidance) } }
-                    .buttonStyle(.borderedProminent)
-                Button("Reject") { Task { await model.reject(guidance) } }
-                    .buttonStyle(.bordered)
-            }
-            .controlSize(.small)
-        }
-        .brandCard(tint: Brand.mention)
-    }
-
-    @ViewBuilder
-    private func deltaView(for pattern: LearnedPattern) -> some View {
-        if let delta = model.deltas[pattern.id] {
-            let pct: (Double) -> String = { "\(Int(($0 * 100).rounded()))%" }
-            HStack(alignment: .top, spacing: 6) {
-                Image(systemName: delta.regresses ? "exclamationmark.triangle.fill" : "checkmark.seal")
-                    .foregroundStyle(delta.regresses ? .orange : .green)
-                Text("Precision \(pct(delta.beforePrecision)) -> \(pct(delta.afterPrecision)), false positives \(pct(delta.beforeFalsePositiveRate)) -> \(pct(delta.afterFalsePositiveRate)) over \(delta.sampleCount) labeled")
-                    .font(.caption2)
-                    .foregroundStyle(delta.regresses ? .orange : .secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        } else {
-            Text("Not enough labeled examples to estimate precision impact.")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
         }
     }
 }

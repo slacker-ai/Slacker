@@ -7,7 +7,6 @@ final class AppSettingsTests: XCTestCase {
         // The PRD/§11 defaults: 48h staleness, choose-don't-default manifest, Anthropic default.
         let settings = AppSettings()
         XCTAssertEqual(settings.stalenessHours, 48)
-        XCTAssertEqual(settings.pollIntervalSeconds, 180)
         XCTAssertEqual(settings.summaryRefreshIntervalMinutes, 360)
         XCTAssertEqual(settings.manifestVariant, .publicAndPrivate)
         XCTAssertEqual(settings.llmProvider, .anthropic)

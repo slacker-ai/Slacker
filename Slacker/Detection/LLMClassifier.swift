@@ -1,16 +1,22 @@
 import Foundation
 
-/// Classifies a rule-ambiguous message with the LLM, returning an intermediate class
-/// + confidence (§7.1). Strict-JSON contract; defensive parsing; a parse failure
-/// returns `nil` so the caller treats it as "uncertain" (→ review queue), never a crash.
+/// Classifies a message with the LLM for ambiguity or an approved-guidance precision
+/// check, returning an intermediate class + confidence (§7.1). Strict-JSON contract;
+/// defensive parsing; a parse failure never crashes detection.
 struct LLMClassifier {
     let client: LLMClient
     /// Learned, company-specific guidance appended to the stable base prompt (§7.5,
     /// self-evolution). Empty = base prompt only. The base prompt's JSON contract is
-    /// fixed in code; only this advisory block is learned.
+    /// fixed in code; only this approved overlay is learned.
     var guidance: String = ""
 
-    private let baseSystem = """
+    var hasGuidance: Bool {
+        !guidance.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    /// Kept reusable so the evolution loop can compare a proposed guidance change with
+    /// the exact classifier contract that is already in force.
+    static let baseSystem = """
     You label a single Slack message for a local-first Slack catch-up app. Use the \
     thread context only to decide whether the message still represents an open loop. \
     Choose exactly one class:
@@ -27,6 +33,8 @@ struct LLMClassifier {
     - contextOnly: FYI/status/chatter, praise, thanks, already completed work, messages \
       that the thread context shows are answered/resolved, or vague discussion with no \
       owner/action needed.
+    - Slack system join/leave notifications are membership events, not actionable \
+      messages. Always classify them as contextOnly.
 
     Resolution/context rules:
     - If the thread already contains a concrete answer, completion, approval, handoff, \
@@ -46,10 +54,15 @@ struct LLMClassifier {
     """
 
     /// Base prompt plus the learned guidance block, when present.
-    private var system: String {
+    static func effectiveSystemPrompt(guidance: String) -> String {
         let trimmed = guidance.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return baseSystem }
-        return baseSystem + "\n\nCompany-specific guidance (apply within the contract above):\n" + trimmed
+        return baseSystem + "\n\nApproved company-specific guidance (apply within the contract above; when it says to ignore or suppress a matching message, classify it as contextOnly):\n" + trimmed
+    }
+
+    /// Base prompt plus the learned guidance block, when present.
+    private var system: String {
+        Self.effectiveSystemPrompt(guidance: guidance)
     }
 
     enum ClassificationFailure: Error, Equatable {

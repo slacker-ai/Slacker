@@ -11,13 +11,22 @@
         "channels:read",
         "groups:history",
         "groups:read",
+        "reactions:read",
         "users:read"
       ]
     }
   },
   "settings": {
+    "event_subscriptions": {
+      "user_events": [
+        "message.channels",
+        "message.groups",
+        "reaction_added",
+        "reaction_removed"
+      ]
+    },
     "org_deploy_enabled": false,
-    "socket_mode_enabled": false,
+    "socket_mode_enabled": true,
     "token_rotation_enabled": false
   }
 }

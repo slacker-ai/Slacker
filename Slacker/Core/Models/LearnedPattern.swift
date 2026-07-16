@@ -1,9 +1,8 @@
 import Foundation
 import GRDB
 
-/// Lifecycle of a learned pattern/guidance proposal (§7.5, self-evolution).
-/// Detection only ever consumes `approved` rows, so a proposal is inert until a human
-/// approves it in Settings — precision can never silently regress.
+/// Lifecycle of a learned pattern/guidance row (§7.5, self-evolution). New automatic
+/// evolution writes approved rows; the other states preserve older database history.
 enum PatternStatus: String, Codable, Sendable {
     case proposed
     case approved
@@ -32,7 +31,7 @@ struct LearnedPattern: Codable, Identifiable, Equatable, FetchableRecord, Persis
     var phrase: String
     var status: PatternStatus
     var source: PatternSource
-    /// The LLM's one-line reason, shown in the review UI.
+    /// The LLM's one-line reason, shown with the active phrase in Settings.
     var rationale: String?
     /// How many labeled examples supported this proposal (review signal).
     var supportingLabelCount: Int

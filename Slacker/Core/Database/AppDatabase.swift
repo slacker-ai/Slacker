@@ -263,6 +263,83 @@ struct AppDatabase {
             }
         }
 
+        migrator.registerMigration("v17_message_activity_observations") { db in
+            try db.alter(table: "message") { t in
+                t.add(column: "firstObservedAt", .datetime)
+                t.add(column: "contentEditedAt", .datetime)
+                t.add(column: "openReactionObservedAt", .datetime)
+                t.add(column: "resolvedReactionRemovedAt", .datetime)
+            }
+            // Existing messages predate local observation tracking. Seed their first
+            // observation from Slack's timestamp so an upgrade cannot resurrect old work.
+            try db.execute(sql: """
+                UPDATE message
+                SET firstObservedAt = datetime(CAST(ts AS REAL), 'unixepoch')
+                WHERE firstObservedAt IS NULL
+                """)
+        }
+
+        migrator.registerMigration("v18_automatic_evolution") { db in
+            let timestamp = Date()
+
+            // New builds activate validated model output immediately. Preserve useful
+            // pending phrases from older builds instead of leaving invisible review work.
+            _ = try LearnedPattern
+                .filter(Column("status") == PatternStatus.proposed.rawValue)
+                .updateAll(
+                    db,
+                    Column("status").set(to: PatternStatus.approved.rawValue),
+                    Column("decidedAt").set(to: timestamp)
+                )
+
+            // Old guidance proposals were additive snippets. Fold them into one approved
+            // document per original scope, then retire the obsolete proposal rows.
+            let proposals = try LearnedGuidance
+                .filter(Column("status") == PatternStatus.proposed.rawValue)
+                .order(Column("createdAt"), Column("version"))
+                .fetchAll(db)
+            for (scope, scopedProposals) in Dictionary(grouping: proposals, by: \.channelID) {
+                let scopeFilter = scope.map { Column("channelID") == $0 } ?? (Column("channelID") == nil)
+                let current = try LearnedGuidance
+                    .filter(Column("status") == PatternStatus.approved.rawValue)
+                    .filter(scopeFilter)
+                    .order(Column("version").desc)
+                    .fetchOne(db)?.text
+                    .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                let additions = scopedProposals
+                    .map(\.text)
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .filter { !$0.isEmpty }
+                let combined = ([current].filter { !$0.isEmpty } + additions.map { "- \($0)" })
+                    .joined(separator: "\n\n")
+                if !combined.isEmpty {
+                    let maxVersion = try LearnedGuidance
+                        .filter(scopeFilter)
+                        .select(max(Column("version")), as: Int.self)
+                        .fetchOne(db) ?? 0
+                    try LearnedGuidance(
+                        id: UUID().uuidString,
+                        channelID: scope,
+                        text: combined,
+                        status: .approved,
+                        version: maxVersion + 1,
+                        createdAt: timestamp,
+                        decidedAt: timestamp
+                    ).insert(db)
+                }
+            }
+            _ = try LearnedGuidance
+                .filter(Column("status") == PatternStatus.proposed.rawValue)
+                .updateAll(
+                    db,
+                    Column("status").set(to: PatternStatus.retired.rawValue),
+                    Column("decidedAt").set(to: timestamp)
+                )
+            if !proposals.isEmpty {
+                try Channel.updateAll(db, Column("lastDetectedTS").set(to: nil))
+            }
+        }
+
         return migrator
     }
 }

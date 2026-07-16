@@ -15,6 +15,9 @@ settings:
     SWIFT_VERSION: "5.0"
     MARKETING_VERSION: "1.0.0"
     CURRENT_PROJECT_VERSION: "1"
+    # Release CI overrides these. Empty local values keep Sparkle inert in development.
+    SPARKLE_FEED_URL: ""
+    SPARKLE_PUBLIC_ED_KEY: ""
     CODE_SIGN_STYLE: Automatic
     # Ad-hoc sign so it runs/tests locally without a provisioning profile.
     CODE_SIGN_IDENTITY: "-"
@@ -23,6 +26,9 @@ packages:
   GRDB:
     url: https://github.com/groue/GRDB.swift
     exactVersion: "6.29.3"
+  Sparkle:
+    url: https://github.com/sparkle-project/Sparkle
+    exactVersion: "2.9.2"
 
 targets:
   Slacker:
@@ -32,18 +38,27 @@ targets:
       - Slacker
     dependencies:
       - package: GRDB
+      - package: Sparkle
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.slacker.Slacker
         ENABLE_HARDENED_RUNTIME: YES
         CODE_SIGN_ENTITLEMENTS: Slacker/Slacker.entitlements
         COMBINE_HIDPI_IMAGES: YES
+      configs:
+        # Do not let ad-hoc Xcode builds impersonate the Developer-ID-signed app in
+        # /Applications. macOS keys notification authorization to app identity.
+        Debug:
+          PRODUCT_BUNDLE_IDENTIFIER: com.slacker.Slacker.debug
     info:
       path: Slacker/Info.plist
       properties:
         CFBundleDisplayName: Slacker
-        CFBundleShortVersionString: "1.0.0"
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         LSMinimumSystemVersion: "14.0"
+        SUFeedURL: "$(SPARKLE_FEED_URL)"
+        SUPublicEDKey: "$(SPARKLE_PUBLIC_ED_KEY)"
         # Keep a Dock icon + main window in M0; menu bar is added alongside it.
         LSUIElement: false
         NSHumanReadableCopyright: ""
@@ -60,3 +75,21 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.slacker.SlackerTests
         GENERATE_INFOPLIST_FILE: YES
+
+schemes:
+  Slacker:
+    build:
+      targets:
+        Slacker: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - SlackerTests
+    profile:
+      config: Release
+    analyze:
+      config: Debug
+    archive:
+      config: Release

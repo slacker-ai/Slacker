@@ -39,7 +39,7 @@ xcodebuild test -project Slacker.xcodeproj -scheme Slacker -destination 'platfor
 
 - Use Swift 5, SwiftUI, Swift Concurrency, `URLSession`, and `Codable`.
 - Keep view models `@MainActor`.
-- Keep polling, Slack ingestion, detection, and LLM work off the main actor.
+- Keep Socket Mode, Slack reconciliation/ingestion, detection, and LLM work off the main actor.
 - Use GRDB for SQLite access; do not hand-roll SQLite.
 - Prefer small injectable seams for Slack, LLM, database, subprocess, and clock
   behavior.
@@ -69,7 +69,8 @@ Do not add:
 - Backends, telemetry, analytics, or remote logging
 - DM scopes, bot scopes, write scopes, or broad Slack permissions
 - Secret storage in UserDefaults, plist files, SQLite, or logs
-- Network egress beyond `slack.com` and the user-configured LLM endpoint
+- Network egress beyond `slack.com`, the user-configured LLM endpoint, and the fixed
+  GitHub release feed used for signed application updates
 - Per-person or employee-aggregated views
 
 User-facing copy should avoid surveillance language such as "monitor" or "track

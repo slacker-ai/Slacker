@@ -7,7 +7,7 @@ import AppKit
 @MainActor
 @Observable
 final class OnboardingModel {
-    enum Step {
+    enum Step: Hashable {
         case intro
         case manifestChoice
         case createAndInstall
@@ -23,7 +23,7 @@ final class OnboardingModel {
     }
 
     /// First-run sets up the app (incl. LLM); add-workspace just connects another workspace.
-    enum Mode { case firstRun, addWorkspace }
+    enum Mode: Equatable { case firstRun, addWorkspace }
 
     private let service: SlackConnectionService
     let mode: Mode
@@ -33,6 +33,7 @@ final class OnboardingModel {
 
     var selectedVariant: ManifestVariant = .publicAndPrivate
     var tokenInput: String = ""
+    var appTokenInput: String = ""
 
     // LLM selection (final onboarding step).
     var llmProvider: LLMProvider = .anthropic {
@@ -107,7 +108,10 @@ final class OnboardingModel {
     func validateTokenAndLoadChannels() async {
         phase = .working
         do {
-            let connection = try await service.connect(token: tokenInput)
+            let connection = try await service.connect(
+                userToken: tokenInput,
+                appToken: appTokenInput
+            )
             self.connection = connection
             try service.upsertWorkspace(connection, variant: selectedVariant)
             let loaded = try await service.refreshChannels(

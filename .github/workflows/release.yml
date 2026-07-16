@@ -19,6 +19,10 @@ jobs:
       ARCHIVE_PATH: build/Slacker.xcarchive
       EXPORT_PATH: build/export
       DMG_PATH: build/Slacker.dmg
+      APPCAST_PATH: build/appcast.xml
+      UPDATES_PATH: build/updates
+      SOURCE_PACKAGES_PATH: build/SourcePackages
+      SPARKLE_FEED_URL: https://github.com/slacker-ai/Slacker/releases/latest/download/appcast.xml
 
     steps:
       - name: Check out repository
@@ -27,14 +31,45 @@ jobs:
       - name: Install XcodeGen
         run: brew install xcodegen
 
+      - name: Validate release configuration
+        env:
+          SPARKLE_PUBLIC_ED_KEY: ${{ vars.SPARKLE_PUBLIC_ED_KEY }}
+          SPARKLE_EDDSA_PRIVATE_KEY: ${{ secrets.SPARKLE_EDDSA_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]] || {
+            echo "release tag must be a semantic version such as v1.2.3" >&2
+            exit 1
+          }
+          [[ -n "$SPARKLE_PUBLIC_ED_KEY" ]] || {
+            echo "repository variable SPARKLE_PUBLIC_ED_KEY is required" >&2
+            exit 1
+          }
+          [[ -n "$SPARKLE_EDDSA_PRIVATE_KEY" ]] || {
+            echo "repository secret SPARKLE_EDDSA_PRIVATE_KEY is required" >&2
+            exit 1
+          }
+          printf '%s' "$SPARKLE_PUBLIC_ED_KEY" | base64 --decode > "$RUNNER_TEMP/sparkle-public-key"
+          [[ "$(wc -c < "$RUNNER_TEMP/sparkle-public-key" | tr -d ' ')" == "32" ]] || {
+            echo "SPARKLE_PUBLIC_ED_KEY must decode to 32 bytes" >&2
+            exit 1
+          }
+          rm -f "$RUNNER_TEMP/sparkle-public-key"
+
       - name: Generate Xcode project
         run: xcodegen generate
 
       - name: Resolve Swift packages
-        run: xcodebuild -project Slacker.xcodeproj -scheme Slacker -resolvePackageDependencies
+        run: >-
+          xcodebuild -project Slacker.xcodeproj -scheme Slacker
+          -clonedSourcePackagesDirPath "$SOURCE_PACKAGES_PATH"
+          -resolvePackageDependencies
 
       - name: Run tests
-        run: xcodebuild test -project Slacker.xcodeproj -scheme Slacker -destination 'platform=macOS'
+        run: >-
+          xcodebuild test -project Slacker.xcodeproj -scheme Slacker
+          -clonedSourcePackagesDirPath "$SOURCE_PACKAGES_PATH"
+          -destination 'platform=macOS'
 
       - name: Import Developer ID certificate
         env:
@@ -57,6 +92,7 @@ jobs:
       - name: Archive app
         env:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          SPARKLE_PUBLIC_ED_KEY: ${{ vars.SPARKLE_PUBLIC_ED_KEY }}
         run: |
           set -euo pipefail
           xcodebuild archive \
@@ -64,10 +100,15 @@ jobs:
             -scheme Slacker \
             -configuration Release \
             -destination 'generic/platform=macOS' \
+            -clonedSourcePackagesDirPath "$SOURCE_PACKAGES_PATH" \
             -archivePath "$ARCHIVE_PATH" \
             CODE_SIGN_STYLE=Manual \
             CODE_SIGN_IDENTITY="Developer ID Application" \
-            DEVELOPMENT_TEAM="$APPLE_TEAM_ID"
+            DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
+            MARKETING_VERSION="${GITHUB_REF_NAME#v}" \
+            CURRENT_PROJECT_VERSION="$GITHUB_RUN_NUMBER" \
+            SPARKLE_FEED_URL="$SPARKLE_FEED_URL" \
+            SPARKLE_PUBLIC_ED_KEY="$SPARKLE_PUBLIC_ED_KEY"
 
       - name: Export signed app
         env:
@@ -99,6 +140,21 @@ jobs:
           set -euo pipefail
           codesign --verify --deep --strict --verbose=2 "$EXPORT_PATH/$APP_NAME.app"
 
+      - name: Verify release metadata
+        env:
+          SPARKLE_PUBLIC_ED_KEY: ${{ vars.SPARKLE_PUBLIC_ED_KEY }}
+        run: |
+          set -euo pipefail
+          INFO_PLIST="$EXPORT_PATH/$APP_NAME.app/Contents/Info.plist"
+          VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$INFO_PLIST")"
+          BUILD="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$INFO_PLIST")"
+          FEED="$(/usr/libexec/PlistBuddy -c 'Print :SUFeedURL' "$INFO_PLIST")"
+          PUBLIC_KEY="$(/usr/libexec/PlistBuddy -c 'Print :SUPublicEDKey' "$INFO_PLIST")"
+          [[ "$VERSION" == "${GITHUB_REF_NAME#v}" ]]
+          [[ "$BUILD" == "$GITHUB_RUN_NUMBER" ]]
+          [[ "$FEED" == "$SPARKLE_FEED_URL" ]]
+          [[ "$PUBLIC_KEY" == "$SPARKLE_PUBLIC_ED_KEY" ]]
+
       - name: Create DMG
         run: scripts/create-dmg.sh "$EXPORT_PATH/$APP_NAME.app" "$DMG_PATH"
 
@@ -124,6 +180,29 @@ jobs:
           xcrun stapler validate "$DMG_PATH"
           spctl --assess --type open --context context:primary-signature --verbose=2 "$DMG_PATH"
 
+      - name: Generate signed Sparkle appcast
+        env:
+          SPARKLE_EDDSA_PRIVATE_KEY: ${{ secrets.SPARKLE_EDDSA_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          GENERATE_APPCAST="$SOURCE_PACKAGES_PATH/artifacts/sparkle/Sparkle/bin/generate_appcast"
+          [[ -x "$GENERATE_APPCAST" ]] || {
+            echo "Sparkle generate_appcast tool was not found" >&2
+            exit 1
+          }
+          mkdir -p "$UPDATES_PATH"
+          cp "$DMG_PATH" "$UPDATES_PATH/$APP_NAME.dmg"
+          printf '%s' "$SPARKLE_EDDSA_PRIVATE_KEY" | "$GENERATE_APPCAST" \
+            --ed-key-file - \
+            --download-url-prefix "https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME/" \
+            --full-release-notes-url "https://github.com/$GITHUB_REPOSITORY/releases/tag/$GITHUB_REF_NAME" \
+            --link "https://github.com/$GITHUB_REPOSITORY" \
+            --maximum-versions 1 \
+            --maximum-deltas 0 \
+            -o "$APPCAST_PATH" \
+            "$UPDATES_PATH"
+          xmllint --noout "$APPCAST_PATH"
+
       - name: Create checksum
         run: shasum -a 256 "$DMG_PATH" > "$DMG_PATH.sha256"
 
@@ -135,3 +214,4 @@ jobs:
           files: |
             ${{ env.DMG_PATH }}
             ${{ env.DMG_PATH }}.sha256
+            ${{ env.APPCAST_PATH }}

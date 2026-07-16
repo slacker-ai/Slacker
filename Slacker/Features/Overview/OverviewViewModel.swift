@@ -33,20 +33,9 @@ final class OverviewViewModel {
         }
     }
 
-    /// Triggers an immediate poll+summarize cycle (wired by `AppRoot`).
-    @ObservationIgnored var onRefresh: (() async -> Void)?
-    var isRefreshing = false
-
     init(database: AppDatabase, now: @escaping () -> Date = { Date() }) {
         self.database = database
         self.now = now
-    }
-
-    func refreshNow() async {
-        guard let onRefresh, !isRefreshing else { return }
-        isRefreshing = true
-        await onRefresh()
-        isRefreshing = false
     }
 
     func reload() async {

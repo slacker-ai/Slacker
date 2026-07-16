@@ -26,6 +26,7 @@ struct SettingsView: View {
 
     /// True when the saved model isn't one of the curated options → show a text field.
     @State private var isCustomModel = false
+    @State private var expandedWorkspaceIDs: Set<String> = []
 
     private var isCLIProvider: Bool {
         model.settings.llmProvider == .codexCLI || model.settings.llmProvider == .claudeCode
@@ -39,7 +40,6 @@ struct SettingsView: View {
 
     var body: some View {
         Form {
-            autosaveSection
             detectionSection
             learningSection
             llmSection
@@ -90,13 +90,6 @@ struct SettingsView: View {
         }
     }
 
-    private var autosaveSection: some View {
-        Section {
-            Label("Changes save automatically.", systemImage: "checkmark.circle")
-                .foregroundStyle(.secondary)
-        }
-    }
-
     private var autosaveStatusIcon: String {
         switch model.autosaveStatus {
         case "Autosaved": "checkmark.circle.fill"
@@ -119,23 +112,24 @@ struct SettingsView: View {
                 Text("No workspaces connected.").foregroundStyle(.secondary)
             } else {
                 ForEach(model.workspaces) { workspace in
-                    HStack {
-                        Label(workspace.name, systemImage: "building.2")
-                        Spacer()
-                        Button(role: .destructive) {
-                            model.removeWorkspace(workspace)
-                        } label: {
-                            Image(systemName: "trash")
+                    DisclosureGroup(isExpanded: workspaceExpansionBinding(for: workspace.id)) {
+                        workspaceDetails(workspace)
+                            .padding(.top, 8)
+                    } label: {
+                        HStack {
+                            Label(workspace.name, systemImage: "building.2")
+                                .font(.body.weight(.medium))
+                            Spacer()
+                            socketStatus(for: workspace)
+                                .font(.caption)
                         }
-                        .buttonStyle(.borderless)
-                        .help("Disconnect this workspace and delete its local data (token, channels, items).")
                     }
                 }
             }
         } header: {
             HStack {
                 Text("Workspaces")
-                HelpBadge("Each workspace has its own Slack token and channels. Add several to track them all in one place.")
+                HelpBadge("Each workspace has a user token for read access and an app-level token for its real-time Socket Mode connection. Both stay in Keychain.")
                 Spacer()
                 Button {
                     model.startAddWorkspace()
@@ -144,6 +138,70 @@ struct SettingsView: View {
                 }
                 .textCase(nil)
             }
+        }
+    }
+
+    private func workspaceExpansionBinding(for workspaceID: String) -> Binding<Bool> {
+        Binding(
+            get: { expandedWorkspaceIDs.contains(workspaceID) },
+            set: { isExpanded in
+                if isExpanded {
+                    expandedWorkspaceIDs.insert(workspaceID)
+                } else {
+                    expandedWorkspaceIDs.remove(workspaceID)
+                }
+            }
+        )
+    }
+
+    private func workspaceDetails(_ workspace: Workspace) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if model.socketState(for: workspace) == .setupRequired {
+                Label(
+                    "Socket Mode setup required. In Slack, open Basic Information → App-Level Tokens and generate a token with connections:write.",
+                    systemImage: "exclamationmark.triangle.fill"
+                )
+                .font(.caption)
+                .foregroundStyle(.orange)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if case .failed(let message) = model.socketState(for: workspace) {
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            HStack {
+                SecureField(
+                    model.socketState(for: workspace) == .setupRequired
+                        ? "xapp-..."
+                        : "Replace xapp- token",
+                    text: appTokenBinding(for: workspace)
+                )
+                .textFieldStyle(.roundedBorder)
+
+                if model.savingAppTokenWorkspaceIDs.contains(workspace.id) {
+                    ProgressView().controlSize(.small)
+                }
+                Button(model.socketState(for: workspace) == .setupRequired ? "Configure" : "Replace") {
+                    Task { await model.saveAppToken(for: workspace) }
+                }
+                .disabled((model.appTokenInputs[workspace.id] ?? "")
+                    .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    || model.savingAppTokenWorkspaceIDs.contains(workspace.id))
+            }
+
+            Divider()
+
+            Button(role: .destructive) {
+                Task { await model.removeWorkspace(workspace) }
+            } label: {
+                Label("Disconnect workspace", systemImage: "trash")
+            }
+            .buttonStyle(.borderless)
+            .help("Disconnect this workspace and delete its local data and both Slack tokens.")
         }
     }
 
@@ -156,16 +214,39 @@ struct SettingsView: View {
                 Stepper("\(model.settings.stalenessHours)h",
                         value: $model.settings.stalenessHours, in: 1...336, step: 1)
             }
-            LabeledRow("Poll interval",
-                       help: "How often Slacker checks your channels for new messages. Lower = fresher, but more Slack API calls.") {
-                Stepper("\(model.settings.pollIntervalSeconds)s",
-                        value: $model.settings.pollIntervalSeconds, in: 60...900, step: 30)
-            }
             LabeledRow("Summary interval",
-                       help: "How often daily channel summaries may regenerate when new activity arrives. Refresh still updates messages and detection immediately.") {
+                       help: "How often daily channel summaries may regenerate when new activity arrives. Socket Mode updates messages and detection immediately.") {
                 Stepper(summaryIntervalLabel(model.settings.summaryRefreshIntervalMinutes),
                         value: $model.settings.summaryRefreshIntervalMinutes, in: 15...1440, step: 15)
             }
+        }
+    }
+
+    private func appTokenBinding(for workspace: Workspace) -> Binding<String> {
+        Binding(
+            get: { model.appTokenInputs[workspace.id] ?? "" },
+            set: { model.appTokenInputs[workspace.id] = $0 }
+        )
+    }
+
+    @ViewBuilder
+    private func socketStatus(for workspace: Workspace) -> some View {
+        switch model.socketState(for: workspace) {
+        case .setupRequired:
+            Label("Setup required", systemImage: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+        case .disconnected:
+            Label("Disconnected", systemImage: "circle")
+                .foregroundStyle(.secondary)
+        case .connecting:
+            Label("Connecting", systemImage: "arrow.triangle.2.circlepath")
+                .foregroundStyle(.secondary)
+        case .connected:
+            Label("Live", systemImage: "bolt.horizontal.circle.fill")
+                .foregroundStyle(.green)
+        case .failed:
+            Label("Connection issue", systemImage: "exclamationmark.circle.fill")
+                .foregroundStyle(.red)
         }
     }
 
@@ -182,7 +263,7 @@ struct SettingsView: View {
     private var learningSection: some View {
         Section {
             LabeledRow("Enable self-evolution",
-                       help: "When enabled, triage decisions can propose learned detection phrases and learned AI guidance. Proposals still require your approval before affecting detection.") {
+                       help: "When enabled, Resolve, Dismiss, and Review actions immediately update validated learned phrases and global/channel AI guidance.") {
                 Toggle("", isOn: $model.settings.selfEvolutionEnabled)
                     .labelsHidden()
             }
@@ -194,8 +275,8 @@ struct SettingsView: View {
                     EmptyView()
                 } label: {
                     HStack {
-                        Label("Approved phrases", systemImage: "wand.and.stars")
-                        HelpBadge("Open Learned patterns to add, view, or retire approved phrases and active AI guidance.")
+                        Label("Learned prompts and phrases", systemImage: "wand.and.stars")
+                        HelpBadge("Edit the global prompt, searchable channel prompts, and active learned phrases.")
                     }
                 }
             }
@@ -214,7 +295,7 @@ struct SettingsView: View {
     private var llmSection: some View {
         Section("AI provider") {
             LabeledRow("Provider",
-                       help: "Which AI model classifies ambiguous messages and writes summaries. Local LLM (Ollama) runs entirely on your machine; nothing leaves your laptop.") {
+                       help: "Which AI model classifies ambiguous messages, applies approved guidance, and writes summaries. Local LLM (Ollama) runs entirely on your machine; nothing leaves your laptop.") {
                 Picker("", selection: $model.settings.llmProvider) {
                     ForEach(LLMProvider.allCases, id: \.self) { provider in
                         Text(providerNames[provider] ?? provider.rawValue).tag(provider)
@@ -353,9 +434,22 @@ struct SettingsView: View {
     @ViewBuilder
     private var channelsSection: some View {
         Section {
-            if model.channels.allSatisfy({ !$0.isWatched }) {
+            let watchedWorkspaceIDs = Set(model.channels.lazy.filter(\.isWatched).map(\.workspaceID))
+            if watchedWorkspaceIDs.isEmpty {
                 Text("No channels watched yet. Use “Add channel” to start watching one.")
                     .foregroundStyle(.secondary)
+            } else {
+                ForEach(model.workspaces.filter { watchedWorkspaceIDs.contains($0.id) }) { workspace in
+                    Text(workspace.name)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+
+                    columnHeaderRow
+
+                    ForEach(model.watchedChannels(for: workspace.id)) { channel in
+                        channelRow(channel)
+                    }
+                }
             }
         } header: {
             HStack {
@@ -366,19 +460,6 @@ struct SettingsView: View {
                     Label("Add channel", systemImage: "plus")
                 }
                 .textCase(nil)
-            }
-        }
-
-        // Watched channels grouped under their workspace.
-        ForEach(model.workspaces) { workspace in
-            let watched = model.watchedChannels(for: workspace.id)
-            if !watched.isEmpty {
-                Section(workspace.name) {
-                    columnHeaderRow
-                    ForEach(watched) { channel in
-                        channelRow(channel)
-                    }
-                }
             }
         }
     }
@@ -426,7 +507,7 @@ struct SettingsView: View {
                 Image(systemName: "trash")
             }
             .buttonStyle(.borderless)
-            .help("Remove this channel. A Refresh re-adds it if you're still a member.")
+            .help("Remove this channel. Find new channels can re-add it if you're still a member.")
         }
     }
 

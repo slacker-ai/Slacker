@@ -53,10 +53,20 @@ enum LLMClientFactory {
         case .codexCLI:
             let path = try resolve("codex", override: settings.cliPathOverride, locate: locate)
             return CLILLMClient(runner: runner, executable: path) { request in
-                // `codex exec "<prompt>"` runs non-interactively and prints the result.
-                // Slacker uses Codex as a text classifier/summarizer, not as a repo
-                // editor, so bypass the trusted-git-directory requirement.
-                (["exec", "--skip-git-repo-check", CLILLMClient.combinedPrompt(request)], nil)
+                // Slacker needs only model output. Loading the user's Codex config would also
+                // start their MCP servers, plugins, and notification hooks on every request.
+                ([
+                    "exec",
+                    "--ignore-user-config",
+                    "--ignore-rules",
+                    "--disable", "shell_tool",
+                    "--disable", "shell_snapshot",
+                    "--ephemeral",
+                    "--sandbox", "read-only",
+                    "--model", model,
+                    "--skip-git-repo-check",
+                    "-",
+                ], CLILLMClient.combinedPrompt(request))
             }
 
         case .claudeCode:

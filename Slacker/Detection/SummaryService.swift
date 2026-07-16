@@ -17,15 +17,19 @@ struct SummaryService {
     Do not single out individuals' performance.
     """
 
-    /// Generate or refresh today's summary for each watched channel when the interval allows.
-    func generateDailySummaries() async throws {
+    /// Generate or refresh today's summary only for channels touched by an ingestion batch.
+    func generateDailySummaries(channelIDs: Set<String>) async throws {
+        guard !channelIDs.isEmpty else { return }
         guard let llm else {
             Log.info("Summary skipped: no LLM configured (set a provider + key in Settings).")
             return
         }
 
         let channels = try await database.dbWriter.read { db in
-            try Channel.filter(Column("isWatched") == true).fetchAll(db)
+            try Channel
+                .filter(Column("isWatched") == true)
+                .filter(channelIDs.contains(Column("id")))
+                .fetchAll(db)
         }
         let today = dayString(now())
         let startOfDay = calendar.startOfDay(for: now()).timeIntervalSince1970
@@ -67,7 +71,7 @@ struct SummaryService {
             do {
                 text = try await llm.complete(LLMRequest(system: system, user: transcript))
             } catch {
-                Log.info("LLM summary[#\(channel.name) date=\(today)]: call failed (\(error)); will retry next cycle.")
+                Log.info("LLM summary[#\(channel.name) date=\(today)]: call failed (\(error)); will retry after new activity.")
                 continue
             }
 
@@ -83,9 +87,9 @@ struct SummaryService {
         try await database.dbWriter.read { db in
             try Message
                 .filter(Column("channelID") == channelID)
+                .filter(sql: "CAST(ts AS REAL) >= ?", arguments: [startOfDay])
                 .order(Column("ts"))
                 .fetchAll(db)
-                .filter { $0.timestamp >= startOfDay }
         }
     }
 

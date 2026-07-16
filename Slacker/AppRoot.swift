@@ -2,7 +2,7 @@ import Foundation
 import Observation
 import AppKit
 
-/// Top-level app state: owns the database + poller and decides onboarding vs. main UI.
+/// Top-level app state: owns the database + real-time sync and decides onboarding vs. main UI.
 @MainActor
 @Observable
 final class AppRoot {
@@ -17,9 +17,8 @@ final class AppRoot {
     private(set) var overviewViewModel: OverviewViewModel?
     private(set) var settingsModel: SettingsModel?
 
-    @ObservationIgnored private var poller: Poller?
+    @ObservationIgnored private var syncCoordinator: SyncCoordinator?
     @ObservationIgnored private var wakeObserver: NSObjectProtocol?
-    @ObservationIgnored private let evolutionApprovalNotifier = EvolutionApprovalNotifier()
 
     /// Open-item badge for the menu bar (§8.1).
     var badgeCount: Int { mainViewModel?.surfacedCount ?? 0 }
@@ -45,12 +44,12 @@ final class AppRoot {
             isOnboarded = false
         }
 
-        // Under XCTest the app is the test host; do NOT boot the live poller/UI (it would
+        // Under XCTest the app is the test host; do NOT boot live Socket Mode/UI (it would
         // make real network calls with the real Keychain token — slow + flaky in CI).
         guard !AppRoot.isRunningUnderTests else { return }
 
         if isOnboarded { setupMainUI() }
-        startPollingIfReady()
+        startSyncIfReady()
     }
 
     static var isRunningUnderTests: Bool {
@@ -64,7 +63,7 @@ final class AppRoot {
         model.onFinished = { [weak self] in
             self?.isOnboarded = true
             self?.setupMainUI()
-            self?.startPollingIfReady()
+            self?.startSyncIfReady()
         }
         return model
     }
@@ -77,8 +76,8 @@ final class AppRoot {
         overviewViewModel = OverviewViewModel(database: database)
         let settings = SettingsModel(database: database)
         let db = database
-        settings.onRefreshChannels = {
-            // Refresh channels for every connected workspace, each with its own token.
+        settings.onFindNewChannels = {
+            // Reload the channel catalog for every workspace, each with its own token.
             let workspaces = (try? await db.dbWriter.read { try Workspace.fetchAll($0) }) ?? []
             let service = SlackConnectionService(client: SlackClient(), database: db)
             for workspace in workspaces {
@@ -91,12 +90,12 @@ final class AppRoot {
         settingsModel = settings
     }
 
-    // MARK: - Polling
+    // MARK: - Real-time sync
 
-    /// Spin up the poller once the user is connected. Polling immediately backfills
-    /// the gap since the last run; system-wake also triggers a backfill (§6.3).
-    private func startPollingIfReady() {
-        guard isOnboarded, poller == nil else { return }
+    /// Start Socket Mode once the user is connected. HTTP is retained only for bounded
+    /// gap recovery on launch, wake, and reconnect.
+    private func startSyncIfReady() {
+        guard isOnboarded, syncCoordinator == nil else { return }
 
         let ingestion = IngestionService(client: SlackClient(), database: database)
         let db = database
@@ -122,7 +121,6 @@ final class AppRoot {
             return (enabled ?? nil) ?? true
         }
         let detectionService = detection
-        let resolution = ResolutionDetector(database: db)
         var summary = SummaryService(database: db, llm: llmClient)
         summary.minimumRefreshIntervalSeconds = {
             let minutes = try? db.dbWriter.read {
@@ -130,58 +128,67 @@ final class AppRoot {
             }
             return TimeInterval(max((minutes ?? nil) ?? 360, 1) * 60)
         }
+        let summaryService = summary
         let threadSummaries = ItemThreadSummaryService(database: db, llm: llmClient, patternStore: patternStore)
         let evolution = PatternEvolutionService(database: db, llm: llmClient, store: patternStore)
 
-        let poller = Poller(
+        let coordinator = SyncCoordinator(
             ingestion: ingestion,
-            intervalSeconds: {
-                let value = try? db.dbWriter.read { try AppSettings.fetchOne($0, key: 1)?.pollIntervalSeconds }
-                return (value ?? nil) ?? 180
+            database: db,
+            stateSink: { [weak self] workspaceID, state in
+                await self?.socketStateDidChange(state, workspaceID: workspaceID)
             },
-            onCycleComplete: {
-                // Each cycle over the freshly-ingested mirror: detect, auto-close anything
-                // already handled (§7.4), then refresh daily summaries (once/day, §8.3).
-                try await detectionService.detectWatchedChannels()
-                try await resolution.resolveOpenItems()
-                try await threadSummaries.analyzeOpenThreads()
-                try await summary.generateDailySummaries()
-                // Self-evolution is now per-triage (wired via `mainViewModel.onTriageLabeled`
-                // below), not a batched cycle pass — the system learns on every triage click.
+            runAnalysis: { [weak self] batch in
+                try await detectionService.detectChangedRoots(
+                    batch.rootsByChannel,
+                    editedRootTSByChannel: batch.editedRootsByChannel
+                )
+                await self?.mainViewModel?.reload()
+                await self?.overviewViewModel?.reload()
+            },
+            runEnrichment: { [weak self] rootsByChannel in
+                // AI recaps are coalesced and restricted to the roots/channels that
+                // changed, so they never hold up Socket Mode event processing.
+                try await threadSummaries.analyzeOpenThreads(rootsByChannel: rootsByChannel)
+                try await summaryService.generateDailySummaries(
+                    channelIDs: Set(rootsByChannel.keys)
+                )
+                await self?.mainViewModel?.reload()
+                await self?.overviewViewModel?.reload()
             }
         )
-        self.poller = poller
-        Task { await poller.start() }
+        self.syncCoordinator = coordinator
 
-        // Wire the manual "Refresh now" buttons (both tabs) to an immediate cycle.
-        let refresh: () async -> Void = { [weak self] in
-            await poller.pollOnce()
-            await self?.mainViewModel?.reload()
-            await self?.overviewViewModel?.reload()
+        settingsModel?.onChannelWatched = { workspaceID, channelID in
+            await coordinator.reconcileNewlyWatchedChannel(
+                workspaceID: workspaceID,
+                channelID: channelID
+            )
         }
-        mainViewModel?.onRefresh = refresh
-        overviewViewModel?.onRefresh = refresh
 
-        // Per-triage learning (§7.5): every triage verdict immediately proposes a rule
-        // phrase and/or LLM-guidance change (human-approved in Settings). Runs in the
-        // background so triage stays instant.
+        settingsModel?.onConnectionsChanged = { workspaceID in
+            if let workspaceID {
+                await coordinator.restartConnection(workspaceID: workspaceID)
+            } else {
+                await coordinator.reloadConnections()
+            }
+        }
+        settingsModel?.onWorkspaceWillRemove = { workspaceID in
+            await coordinator.disconnectWorkspace(workspaceID)
+        }
+
+        Task { await coordinator.start() }
+
+        // Every explicit user action immediately learns approved phrases/guidance in the
+        // background. The action itself never waits for the model.
         mainViewModel?.onTriageLabeled = { [weak self] channelID, messageTS, verdict, source in
             let enabled = try? await db.dbWriter.read {
                 try AppSettings.fetchOne($0, key: 1)?.selfEvolutionEnabled
             }
             guard (enabled ?? nil) ?? true else { return }
 
-            let before = await MainActor.run {
-                self?.settingsModel?.pendingEvolutionUpdateCount ?? 0
-            }
             await evolution.evolveFromTriage(channelID: channelID, messageTS: messageTS, verdict: verdict, source: source)
             await self?.settingsModel?.learnedPatternsModel.load()
-            let after = await MainActor.run {
-                self?.settingsModel?.pendingEvolutionUpdateCount ?? 0
-            }
-            if after > before {
-                await self?.evolutionApprovalNotifier.notifyPendingApproval(count: after)
-            }
         }
 
         wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
@@ -189,7 +196,20 @@ final class AppRoot {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            Task { await self?.poller?.pollOnce() }
+            Task { @MainActor [weak self] in
+                guard let self, let coordinator = self.syncCoordinator else { return }
+                await coordinator.recoverAll(reason: .wake)
+                await self.mainViewModel?.reload()
+                await self.overviewViewModel?.reload()
+            }
         }
     }
+
+    private func socketStateDidChange(
+        _ state: SocketModeConnectionState,
+        workspaceID: String
+    ) {
+        settingsModel?.setSocketState(state, workspaceID: workspaceID)
+    }
+
 }

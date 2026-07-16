@@ -34,11 +34,12 @@ struct AppSettings: Codable, Equatable {
     /// Staleness threshold in hours. Default 48h (§11 decision).
     var stalenessHours: Int = 48
 
-    /// Polling cadence in seconds. Default 180s (3 min), within internal-app rate limits (§6.4).
+    /// Legacy database column retained so existing SQLite rows remain decodable. Socket
+    /// Mode has no polling cadence and this value is intentionally ignored by the app.
     var pollIntervalSeconds: Int = 180
 
     /// Minimum cadence for regenerating daily channel summaries when new activity arrives.
-    /// Kept separate from polling so Refresh does not spend LLM calls every cycle.
+    /// Refresh/realtime batches do not spend LLM calls more frequently than this.
     var summaryRefreshIntervalMinutes: Int = 360
 
     /// Selected install manifest. Chosen during onboarding, not silently defaulted (§5.2).
@@ -52,8 +53,8 @@ struct AppSettings: Codable, Equatable {
     /// Optional explicit path to the CLI binary (Codex / Claude Code); empty = auto-detect.
     var cliPathOverride: String = ""
 
-    /// Enables learned detection phrases, learned guidance injection, and new
-    /// self-evolution proposals from triage.
+    /// Enables learned detection phrases, guidance injection, and immediate automatic
+    /// evolution from explicit user actions.
     var selfEvolutionEnabled: Bool = true
 
     /// Whether the user has completed onboarding (token validated + channels picked).

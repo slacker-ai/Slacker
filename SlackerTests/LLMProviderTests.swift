@@ -112,6 +112,14 @@ final class CLILLMClientTests: XCTestCase {
         let p = CLILLMClient.combinedPrompt(LLMRequest(system: "S", user: "U"))
         XCTAssertEqual(p, "S\n\nU")
     }
+
+    func testProcessRunnerUsesAppSupportWorkingDirectory() async throws {
+        let output = try await ProcessCLIRunner().run(executable: "/bin/pwd", arguments: [], stdin: nil)
+        let pwd = output.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        XCTAssertTrue(pwd.contains("/Library/Application Support/Slacker/CLIWorkdir"), pwd)
+        XCTAssertFalse(pwd.contains("/Documents/prod/Slacker"), pwd)
+    }
 }
 
 final class BinaryLocatorTests: XCTestCase {
@@ -169,7 +177,19 @@ final class LLMClientFactoryTests: XCTestCase {
         )
         _ = try await client.complete(LLMRequest(system: "S", user: "U"))
         XCTAssertEqual(runner.executable, "/usr/local/bin/codex")
-        XCTAssertEqual(runner.arguments, ["exec", "--skip-git-repo-check", "S\n\nU"])
+        XCTAssertEqual(runner.arguments, [
+            "exec",
+            "--ignore-user-config",
+            "--ignore-rules",
+            "--disable", "shell_tool",
+            "--disable", "shell_snapshot",
+            "--ephemeral",
+            "--sandbox", "read-only",
+            "--model", "m",
+            "--skip-git-repo-check",
+            "-",
+        ])
+        XCTAssertEqual(runner.stdin, "S\n\nU")
     }
 
     func testClaudeCodeCLIPipesPromptToStdin() async throws {

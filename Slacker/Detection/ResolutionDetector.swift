@@ -34,11 +34,18 @@ struct ResolutionDetector {
     /// States still in play that resolution may close.
     private static let openStates: [ItemState] = [.open, .surfaced, .review]
 
-    func resolveOpenItems() async throws {
-        let items = try await database.dbWriter.read { db in
-            try Item
-                .filter(ResolutionDetector.openStates.map(\.rawValue).contains(Column("state")))
-                .fetchAll(db)
+    func resolveChangedRoots(_ rootsByChannel: [String: Set<String>]) async throws {
+        var items: [Item] = []
+        for channelID in rootsByChannel.keys.sorted() {
+            guard let roots = rootsByChannel[channelID], !roots.isEmpty else { continue }
+            let channelItems = try await database.dbWriter.read { db in
+                try Item
+                    .filter(Column("channelID") == channelID)
+                    .filter(roots.contains(Column("rootMessageTS")))
+                    .filter(ResolutionDetector.openStates.map(\.rawValue).contains(Column("state")))
+                    .fetchAll(db)
+            }
+            items.append(contentsOf: channelItems)
         }
 
         for item in items {
@@ -74,44 +81,70 @@ struct ResolutionDetector {
         var latestResolved: (ts: Double, reason: ResolutionReason)?
 
         for message in ([root] + replies).sorted(by: { $0.ts < $1.ts }) {
-            guard let ts = Double(message.ts) else { continue }
-
+            let activityTS = activityTimestamp(for: message)
             let reactions = decodeReactions(message.reactionsJSON) ?? []
-            if isExplicitOpenSignal(message: message, reactions: reactions) {
-                latestOpenTS = max(latestOpenTS ?? ts, ts)
-                continue
-            }
             let text = SlackTextSanitizer.stripFencedBlocks(message.text)
             let hasActionableOpenText = isActionableOpenText(text)
-            if hasActionableOpenText {
-                latestOpenTS = max(latestOpenTS ?? ts, ts)
+            var latestOpenOnMessage: Double?
+
+            if EmojiSignalDetector.hasOpenReaction(reactions) {
+                let observedTS = message.openReactionObservedAt?.timeIntervalSince1970
+                    ?? activityTS
+                latestOpenTS = max(latestOpenTS ?? observedTS, observedTS)
+                latestOpenOnMessage = observedTS
+            }
+            if EmojiSignalDetector.hasOpenTextEmoji(text) || hasActionableOpenText {
+                latestOpenTS = max(latestOpenTS ?? activityTS, activityTS)
+                latestOpenOnMessage = max(latestOpenOnMessage ?? activityTS, activityTS)
             }
 
-            let reason: ResolutionReason?
-            let resolvedSignalTS: Double
+            // Open and resolved reactions can coexist on one Slack message. Record both
+            // with their observation times so a newly-added ✅ beats an older 👀, while a
+            // later 👀 can reopen an older completion signal.
             if EmojiSignalDetector.hasResolvedReaction(reactions) {
-                resolvedSignalTS = message.resolvedReactionObservedAt?.timeIntervalSince1970 ?? ts
-                reason = .reacted
-            } else if EmojiSignalDetector.hasResolvedTextEmoji(text) {
-                resolvedSignalTS = ts
-                reason = .reacted
-            } else if hasActionableOpenText {
+                let observedTS = message.resolvedReactionObservedAt?.timeIntervalSince1970
+                    ?? activityTS
+                recordResolved(
+                    ts: observedTS,
+                    reason: .reacted,
+                    latest: &latestResolved
+                )
+            }
+            if EmojiSignalDetector.hasResolvedTextEmoji(text) {
+                recordResolved(
+                    ts: activityTS,
+                    reason: .reacted,
+                    latest: &latestResolved
+                )
+            }
+
+            // Actionable language has precedence over completion words in the same text
+            // (for example, "not fixed, still failing"). An explicit reaction above is
+            // still allowed to carry a later observation time.
+            if hasActionableOpenText {
                 continue
-            } else if containsResolvedWord(text) {
-                resolvedSignalTS = ts
-                reason = .stated
+            }
+            // "not fixed yet 👀" is an open signal, not a completion statement. If the
+            // message was edited after an older open reaction, however, the newer text is
+            // allowed to state completion.
+            if let latestOpenOnMessage, latestOpenOnMessage >= activityTS {
+                continue
+            }
+
+            if containsResolvedWord(text) {
+                recordResolved(
+                    ts: activityTS,
+                    reason: .stated,
+                    latest: &latestResolved
+                )
             } else if message.ts != root.ts,
                       isCoordinationAsk(root.text),
                       containsCoordinationResolution(text) {
-                resolvedSignalTS = ts
-                reason = .stated
-            } else {
-                reason = nil
-                resolvedSignalTS = ts
-            }
-
-            if let reason {
-                latestResolved = (resolvedSignalTS, reason)
+                recordResolved(
+                    ts: activityTS,
+                    reason: .stated,
+                    latest: &latestResolved
+                )
             }
         }
 
@@ -122,10 +155,24 @@ struct ResolutionDetector {
         return latestResolved.reason
     }
 
-    private func isExplicitOpenSignal(message: Message, reactions: [SlackReaction]) -> Bool {
-        let text = SlackTextSanitizer.stripFencedBlocks(message.text)
-        return EmojiSignalDetector.hasOpenReaction(reactions)
-            || EmojiSignalDetector.hasOpenTextEmoji(text)
+    private func activityTimestamp(for message: Message) -> Double {
+        [
+            message.timestamp,
+            message.firstObservedAt?.timeIntervalSince1970,
+            message.contentEditedAt?.timeIntervalSince1970,
+        ]
+        .compactMap { $0 }
+        .max() ?? message.timestamp
+    }
+
+    private func recordResolved(
+        ts: Double,
+        reason: ResolutionReason,
+        latest: inout (ts: Double, reason: ResolutionReason)?
+    ) {
+        if latest == nil || ts >= latest!.ts {
+            latest = (ts, reason)
+        }
     }
 
     private func isActionableOpenText(_ text: String) -> Bool {

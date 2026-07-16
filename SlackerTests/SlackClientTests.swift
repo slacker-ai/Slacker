@@ -39,6 +39,37 @@ final class SlackClientTests: XCTestCase {
                        "Bearer xoxp-secret")
     }
 
+    func testOpenSocketModeConnectionUsesPOSTAndReturnsWebSocketURL() async throws {
+        let transport = StubTransport { _ in
+            (jsonData(#"{"ok":true,"url":"wss://wss-primary.slack.com/link/?ticket=temporary"}"#),
+             makeHTTPResponse(200))
+        }
+
+        let url = try await client(transport).openSocketModeConnection(appToken: "xapp-secret")
+
+        XCTAssertEqual(url.scheme, "wss")
+        XCTAssertEqual(transport.requests.first?.httpMethod, "POST")
+        XCTAssertEqual(
+            transport.requests.first?.value(forHTTPHeaderField: "Authorization"),
+            "Bearer xapp-secret"
+        )
+        XCTAssertFalse(transport.requests.first?.url?.absoluteString.contains("xapp-secret") ?? true)
+    }
+
+    func testOpenSocketModeConnectionRejectsNonSlackWebSocketHost() async {
+        let transport = StubTransport { _ in
+            (jsonData(#"{"ok":true,"url":"wss://attacker.example/socket"}"#),
+             makeHTTPResponse(200))
+        }
+
+        do {
+            _ = try await client(transport).openSocketModeConnection(appToken: "xapp-secret")
+            XCTFail("expected decoding error")
+        } catch {
+            XCTAssertEqual(error as? SlackClientError, .decoding)
+        }
+    }
+
     func testConversationsListPaginatesAndFiltersNonMembers() async throws {
         let transport = StubTransport { request in
             let url = request.url?.absoluteString ?? ""

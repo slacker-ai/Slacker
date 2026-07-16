@@ -1,7 +1,6 @@
 import SwiftUI
 
-/// The main window once connected (§8): a board with Needs attention, Review, Overview,
-/// and Evolution visible together so the user does not have to bounce between tabs.
+/// The main window once connected (§8): Needs attention, Review, and Overview.
 struct MainView: View {
     @Bindable var model: MainViewModel
     let overviewModel: OverviewViewModel
@@ -11,20 +10,18 @@ struct MainView: View {
 
     private enum SettingsSheet: Identifiable {
         case general
-        case evolution
 
-        var id: String {
-            switch self {
-            case .general: return "general"
-            case .evolution: return "evolution"
-            }
-        }
+        var id: String { "general" }
     }
 
     var body: some View {
         VStack(spacing: 0) {
             toolbar
             Divider()
+            if !settingsModel.workspacesNeedingSocketModeSetup.isEmpty {
+                socketModeSetupBanner
+                Divider()
+            }
             board
         }
         .frame(minWidth: 1180, minHeight: 620)
@@ -41,18 +38,17 @@ struct MainView: View {
 
                     Spacer()
                 }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
+                // Keep the header height unchanged while nudging the close control away
+                // from the sheet's top-left edge.
+                .padding(.leading, 18)
+                .padding(.trailing, 14)
+                .padding(.top, 13)
+                .padding(.bottom, 7)
 
                 Divider()
 
                 NavigationStack {
-                    switch sheet {
-                    case .general:
-                        SettingsView(model: settingsModel, showsCloseButton: false)
-                    case .evolution:
-                        LearnedPatternsView(model: settingsModel.learnedPatternsModel)
-                    }
+                    SettingsView(model: settingsModel, showsCloseButton: false)
                 }
             }
             .frame(minWidth: 620, minHeight: 520)
@@ -77,20 +73,12 @@ struct MainView: View {
             Spacer()
 
             Button {
-                Task {
-                    await model.refreshNow()
-                    await overviewModel.refreshNow()
-                }
-            } label: {
-                Label("Refresh", systemImage: "arrow.clockwise")
-            }
-            .disabled(model.isRefreshing || overviewModel.isRefreshing)
-
-            Button {
                 activeSettingsSheet = .general
             } label: {
-                Label("Settings", systemImage: "gearshape")
+                Image(systemName: "gearshape")
             }
+            .accessibilityLabel("Settings")
+            .help("Settings")
         }
         .buttonStyle(.bordered)
         .controlSize(.small)
@@ -99,28 +87,59 @@ struct MainView: View {
         .background(.bar)
     }
 
+    private var socketModeSetupBanner: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Socket Mode setup required")
+                    .font(.callout.weight(.semibold))
+                Text("Real-time updates are off for \(settingsModel.workspacesNeedingSocketModeSetup.map(\.name).joined(separator: ", ")). Add an xapp- token with connections:write in Settings. Slacker will catch up automatically after setup.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            Button("Open Settings") { activeSettingsSheet = .general }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(Color.orange.opacity(0.09))
+    }
+
     // MARK: - Content
 
     private var board: some View {
         HStack(alignment: .top, spacing: 14) {
-            BoardColumn(title: "Needs attention", icon: "bell.badge", count: model.surfacedCount, tint: Brand.primary) {
+            BoardColumn(
+                title: "Needs attention",
+                helpText: "High-confidence follow-ups, stale threads, and mentions that likely need your response.",
+                icon: "bell.badge",
+                count: model.surfacedCount,
+                tint: Brand.primary
+            ) {
                 AttentionListView(model: model, showsNavigationChrome: false)
             }
 
-            BoardColumn(title: "Review", icon: "tray", count: model.reviewItems.count, tint: Brand.mention) {
+            BoardColumn(
+                title: "Review",
+                helpText: "Ambiguous messages Slacker is unsure about. Your triage teaches future detection.",
+                icon: "tray",
+                count: model.reviewItems.count,
+                tint: Brand.mention
+            ) {
                 ReviewQueueView(model: model, showsNavigationChrome: false)
             }
 
-            BoardColumn(title: "Overview", icon: "rectangle.3.group", count: overviewModel.activeChannels.count, tint: Brand.resolved) {
+            BoardColumn(
+                title: "Overview",
+                helpText: "Per-channel daily summaries and open-item counts for watched channels.",
+                icon: "rectangle.3.group",
+                count: overviewModel.activeChannels.count,
+                tint: Brand.resolved
+            ) {
                 OverviewView(model: overviewModel, showsNavigationChrome: false)
-            }
-
-            BoardColumn(title: "Evolution", icon: "wand.and.stars", count: settingsModel.pendingEvolutionUpdateCount, tint: Brand.primaryDeep) {
-                EvolutionApprovalView(
-                    model: settingsModel.learnedPatternsModel,
-                    showsNavigationChrome: false,
-                    onOpenSettings: { activeSettingsSheet = .evolution }
-                )
             }
         }
         .padding(14)
@@ -130,6 +149,7 @@ struct MainView: View {
 
 private struct BoardColumn<Content: View>: View {
     let title: String
+    let helpText: String?
     let icon: String
     let count: Int
     let tint: Color
@@ -142,6 +162,10 @@ private struct BoardColumn<Content: View>: View {
                     .foregroundStyle(tint)
                 Text(title)
                     .font(Brand.display(16))
+                if let helpText {
+                    HelpBadge(helpText)
+                        .font(.caption)
+                }
                 Spacer()
                 Text("\(count)")
                     .font(.caption.weight(.bold))

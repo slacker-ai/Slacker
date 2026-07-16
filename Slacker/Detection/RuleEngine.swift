@@ -225,3 +225,89 @@ struct RuleEngine {
             || text.contains("can't") || text.contains("cannot") || text.contains("won't")
     }
 }
+
+/// Narrow, compiled regular expressions for activity that explicitly reopens a closed
+/// loop. These run only against new or newly-edited terminal-thread activity; the normal
+/// detector remains phrase-based so regex cannot broaden initial detection globally.
+struct ReopenSignalDetector {
+    private struct SignalPattern {
+        let regex: NSRegularExpression
+        let messageClass: MessageClass
+        let confidence: Double
+
+        init(_ pattern: String, _ messageClass: MessageClass, _ confidence: Double) {
+            // Every pattern below is a shipped constant covered by tests. Failing fast is
+            // preferable to silently disabling reopen behavior after a bad code change.
+            self.regex = try! NSRegularExpression(
+                pattern: pattern,
+                options: [.caseInsensitive]
+            )
+            self.messageClass = messageClass
+            self.confidence = confidence
+        }
+    }
+
+    private static let patterns: [SignalPattern] = [
+        SignalPattern(
+            #"\b(?:still|again|currently|now)\s+(?:(?:is|are)\s+|keeps?\s+)?(?:fail(?:ing|ed)?|broken|blocked|stuck|down|degraded|timing\s+out)\b"#,
+            .blocker,
+            0.9
+        ),
+        SignalPattern(
+            #"\b(?:fail(?:ing|ed|ure)?|broken|blocked|stuck|down|degraded|timeout|outage|incident)\s+(?:(?:is|has)\s+)?(?:again|still|returned|back)\b"#,
+            .blocker,
+            0.9
+        ),
+        SignalPattern(
+            #"\b(?:reopen(?:ed|ing)?|regress(?:ed|ion)?|recurr(?:ed|ing|ence)|broke\s+again)\b"#,
+            .blocker,
+            0.9
+        ),
+        SignalPattern(
+            #"\b(?:not|isn['’]?t|wasn['’]?t|never)\s+(?:actually\s+)?(?:fixed|resolved|done|working)\b"#,
+            .blocker,
+            0.9
+        ),
+        SignalPattern(
+            #"\b(?:affecting|impacting)\s+(?:prod(?:uction)?|customers?|users?)\b"#,
+            .blocker,
+            0.9
+        ),
+        SignalPattern(
+            #"\b(?:can|could|would)\s+(?:someone|anyone|you|we)\b"#,
+            .openQuestion,
+            0.85
+        ),
+        SignalPattern(
+            #"\b(?:please\s+)?(?:take\s+a\s+look|look\s+into|investigate|check\s+this|help\s+with|review\s+this)\b"#,
+            .openQuestion,
+            0.85
+        ),
+        SignalPattern(
+            #"\b(?:any\s+updates?|following\s+up|bump(?:ing)?\s+this|circling\s+back)\b"#,
+            .openQuestion,
+            0.9
+        ),
+        SignalPattern(
+            #"\b(?:should\s+we|need\s+(?:a\s+)?decision|which\s+(?:option|approach|path)|go\s*/?\s*no[- ]go)\b"#,
+            .decisionPending,
+            0.8
+        ),
+        SignalPattern(#"\?\s*$"#, .openQuestion, 0.55),
+    ]
+
+    func classify(text rawText: String) -> RuleVerdict {
+        let text = SlackTextSanitizer.stripFencedBlocks(rawText)
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return .contextOnly
+        }
+        let range = NSRange(text.startIndex..., in: text)
+        for pattern in Self.patterns where pattern.regex.firstMatch(in: text, range: range) != nil {
+            return RuleVerdict(
+                messageClass: pattern.messageClass,
+                confidence: pattern.confidence
+            )
+        }
+        return .contextOnly
+    }
+}

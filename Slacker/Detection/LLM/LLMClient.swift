@@ -20,7 +20,7 @@ struct LLMRequest: Equatable {
 }
 
 /// Provider-agnostic completion interface (§9). HTTP and CLI backends both conform.
-/// The same abstraction serves ambiguous-message classification and daily summaries.
+/// The same abstraction serves message classification and daily summaries.
 protocol LLMClient: Sendable {
     func complete(_ request: LLMRequest) async throws -> String
 }

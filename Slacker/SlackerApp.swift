@@ -1,4 +1,11 @@
 import SwiftUI
+import AppKit
+
+final class SlackerAppDelegate: NSObject, NSApplicationDelegate {
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        false
+    }
+}
 
 /// App entry point.
 ///
@@ -10,7 +17,9 @@ import SwiftUI
 /// channels; afterward it shows the main UI.
 @main
 struct SlackerApp: App {
+    @NSApplicationDelegateAdaptor(SlackerAppDelegate.self) private var appDelegate
     @State private var root = AppRoot()
+    private let updater = AppUpdater()
 
     var body: some Scene {
         // A single, unique main window (not a WindowGroup) — so "Open Slacker" focuses
@@ -19,6 +28,14 @@ struct SlackerApp: App {
             RootView(root: root)
         }
         .windowResizability(.contentSize)
+        .commands {
+            CommandGroup(after: .appInfo) {
+                Button("Check for Updates…") {
+                    updater.checkForUpdates()
+                }
+                .disabled(!updater.isConfigured)
+            }
+        }
 
         MenuBarExtra {
             MenuBarContentView(root: root)

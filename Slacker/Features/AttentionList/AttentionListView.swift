@@ -28,18 +28,6 @@ struct AttentionListView: View {
             }
         }
         .navigationTitle(showsNavigationChrome ? "Needs attention" : "")
-        .toolbar {
-            if showsNavigationChrome {
-                ToolbarItem {
-                    Button {
-                        Task { await model.refreshNow() }
-                    } label: {
-                        Label("Refresh", systemImage: "arrow.clockwise")
-                    }
-                    .disabled(model.isRefreshing)
-                }
-            }
-        }
     }
 
     private func signalSection(_ type: ItemType, rows: [ItemRow]) -> some View {

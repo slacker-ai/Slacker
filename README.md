@@ -32,12 +32,15 @@ development; for enterprise inquiries, contact Daanish Hindustani.
   list.
 - **Review queue**: ambiguous messages go to triage instead of becoming noisy
   alerts.
-- **Local learning loop**: triage labels can propose learned rules and guidance,
-  but nothing changes detection until you approve it.
+- **Local learning loop**: Resolve, Dismiss, and Review actions immediately activate
+  validated learned phrases plus global and per-channel AI guidance. Prompts remain
+  directly editable in Settings.
 - **Daily overview**: per-channel summaries provide context without replacing the
   action list.
+- **Real-time Slack delivery**: Socket Mode receives watched-channel activity without
+  scheduled polling; launch, wake, and reconnect use bounded, changed-root HTTP gap recovery.
 - **Bring your own Slack app**: create an internal Slack app from the included
-  manifest and paste your own read-only `xoxp-` user token.
+  manifest and provide its read-only `xoxp-` user token plus an `xapp-` Socket Mode token.
 - **Bring your own LLM provider**: configure the provider or local/CLI model you
   want to use.
 - **Local-first storage**: Slack data is processed locally and stored in SQLite.
@@ -48,16 +51,17 @@ Slacker is designed so there is no Slacker-operated backend.
 
 - No backend, telemetry, analytics, or remote logging.
 - Slack data is processed locally in the macOS app.
-- Slack tokens and LLM API keys stay in Keychain.
+- Slack user/app tokens and LLM API keys stay in Keychain.
 - Local SQLite stores messages, channels, items, summaries, and labels.
-- Network egress is limited to `slack.com` and your configured LLM endpoint.
+- Network egress is limited to `slack.com`, your configured LLM endpoint, and GitHub's
+  release endpoints for cryptographically signed application updates.
 - Slack scopes are read-only. No DM scopes, bot scopes, or write scopes.
 
 You create your own Slack app from a manifest in this repo. No shared OAuth app
 or third-party server receives a token for your workspace.
 
 ## Intall Binary
-Install the newest release [here](https://github.com/slacker-ai/Slacker/releases/download/untagged-ebcb89697785924c7dc5/Slacker.dmg)
+Install the newest release [here](https://github.com/slacker-ai/Slacker/releases/latest/download/Slacker.dmg)
 
 ## Quick Start
 
@@ -79,15 +83,18 @@ During onboarding, choose one manifest variant:
 
 | Variant | Reads | User-token scopes |
 | --- | --- | --- |
-| Public + private channels | Public and private channels you already belong to | `channels:history`, `channels:read`, `groups:history`, `groups:read`, `users:read` |
-| Public channels only | Public channels you already belong to | `channels:history`, `channels:read`, `users:read` |
+| Public + private channels | Public and private channels you already belong to | `channels:history`, `channels:read`, `groups:history`, `groups:read`, `reactions:read`, `users:read` |
+| Public channels only | Public channels you already belong to | `channels:history`, `channels:read`, `reactions:read`, `users:read` |
 
 Manifest files:
 
 - [Public + private](Slacker/Slack/Manifest/manifest-public-private.json)
 - [Public only](Slacker/Slack/Manifest/manifest-public-only.json)
 
-Both variants are read-only. Neither variant can read DMs.
+Both variants enable Socket Mode and user-event subscriptions for messages and reactions.
+They remain read-only and neither variant can read DMs. Each workspace also needs an
+app-level `xapp-` token with `connections:write`; that scope opens the socket and does not
+grant access to Slack content.
 
 ## Development
 
@@ -122,13 +129,13 @@ requests and pushes to `main`.
 Slacker is a SwiftUI app backed by local SQLite through GRDB.
 
 - `Slacker/Core`: database, settings, Keychain, logging, redaction, models
-- `Slacker/Slack`: Slack API client, ingestion, polling, manifests
+- `Slacker/Slack`: Slack API client, Socket Mode, reconciliation, ingestion, manifests
 - `Slacker/Detection`: rules, LLM classification, resolution, summaries, learning
 - `Slacker/Features`: onboarding, attention list, overview, review queue, settings
 - `SlackerTests`: XCTest coverage
 
 Detection is precision-first: rules handle high-confidence cases, LLMs handle
-ambiguous cases, and uncertain items go to review.
+ambiguous cases and approved-guidance checks, and uncertain items go to review.
 
 ## Documentation
 
@@ -165,7 +172,8 @@ Security-sensitive invariants:
 - Secrets must stay in Keychain.
 - Tokens and API keys must be redacted in logs and errors.
 - SQLite must not store secrets.
-- Network access must remain limited to Slack and the user-configured LLM endpoint.
+- Network access must remain limited to Slack, the user-configured LLM endpoint, and
+  GitHub release endpoints used for signed application updates.
 - Slack scopes must remain read-only and exclude DMs.
 
 ## Releases
@@ -177,10 +185,23 @@ git tag v0.1.0
 git push origin v0.1.0
 ```
 
-The release workflow builds and tests the app, archives a Release build, signs
-it with Developer ID, packages `Slacker.app` into a drag-to-Applications DMG,
-notarizes and staples the DMG, then opens a draft GitHub Release with the DMG
-and SHA-256 checksum attached.
+The release workflow derives the application version from the tag, builds and tests the
+app, signs it with Developer ID, packages `Slacker.app` into a drag-to-Applications DMG,
+notarizes and staples the DMG, signs it for Sparkle, and opens a draft GitHub Release with
+the DMG, SHA-256 checksum, and `appcast.xml` attached. Publishing the draft makes the
+release visible to installed copies through **Check for Updates…** and scheduled Sparkle
+checks.
+
+One-time Sparkle signing setup:
+
+```sh
+scripts/setup-sparkle-signing.sh ~/secure/slacker-sparkle-private-key
+# Run the two `gh variable set` / `gh secret set` commands printed by the script.
+```
+
+The private key must be retained in a secure offline backup and must never be committed.
+Existing installations from before Sparkle was added require one final manual DMG update;
+later releases can update in place.
 
 Local development uses ad-hoc signing. Public release DMGs must be Developer ID
 signed and notarized before normal user download.

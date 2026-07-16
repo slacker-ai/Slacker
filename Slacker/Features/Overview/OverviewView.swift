@@ -49,18 +49,6 @@ struct OverviewView: View {
             }
         }
         .navigationTitle(showsNavigationChrome ? "Overview" : "")
-        .toolbar {
-            if showsNavigationChrome {
-                ToolbarItem {
-                    Button {
-                        Task { await model.refreshNow() }
-                    } label: {
-                        Label("Refresh", systemImage: "arrow.clockwise")
-                    }
-                    .disabled(model.isRefreshing)
-                }
-            }
-        }
         .task { await model.reload() }
     }
 }
