@@ -77,14 +77,14 @@ AppRoot (@MainActor)
        │    ├─ reply/edit        → conversations.replies for affected root
        │    ├─ reaction change   → resolve local message to root, then replies
        │    └─ deletion          → remove local message/item, refresh parent if needed
-       ├─ lifecycle gap recovery (launch/wake/reconnect only)
+       ├─ bounded gap recovery (launch/wake/reconnect/foreground)
        │    ├─ history from durable lastPolledTS
        │    └─ tracked thread snapshots in batches of 12 (max 3 HTTP requests)
        ├─ newly watched channel Task
        │    └─ channel-only initial history backfill + targeted root detection
        ├─ analysis path
        │    ├─ Socket batch → detect only affected roots
-       │    ├─ lifecycle snapshots → detect only roots whose Slack content changed
+       │    ├─ gap-recovery snapshots → detect only roots whose Slack content changed
        │    └─ update UI through GRDB observation
        └─ coalesced background enrichment
             ├─ ItemThreadSummaryService.analyzeOpenThreads(changed roots)

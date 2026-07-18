@@ -130,6 +130,19 @@ final class RuleEngineTests: XCTestCase {
         XCTAssertEqual(engine.classify(text: "facing issues with the deploy").messageClass, .blocker)
     }
 
+    func testIssuePreventingOutcomeIsBlocker() {
+        let verdict = engine.classify(
+            text: "Theres a networking issue which is preventing trades from being placed"
+        )
+
+        XCTAssertEqual(verdict.messageClass, .blocker)
+        XCTAssertGreaterThanOrEqual(verdict.confidence, 0.8)
+        XCTAssertEqual(
+            engine.classify(text: "This guard prevents a networking issue from affecting trades").messageClass,
+            .contextOnly
+        )
+    }
+
     func testHelpRequestIsOpenQuestion() {
         XCTAssertEqual(engine.classify(text: "any idea why CI is red").messageClass, .openQuestion)
         XCTAssertEqual(engine.classify(text: "how do I reset the staging db").messageClass, .openQuestion)

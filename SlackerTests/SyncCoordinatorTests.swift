@@ -37,6 +37,21 @@ final class SyncCoordinatorTests: XCTestCase {
         XCTAssertEqual(reason, .wake)
     }
 
+    func testForegroundIsAnExplicitOneShotGapRecovery() async throws {
+        let db = try await seededDatabase()
+        let ingestion = RecordingIngestion()
+        let analysis = AtomicInt()
+        let coordinator = makeCoordinator(database: db, ingestion: ingestion, analysis: analysis)
+
+        await coordinator.recoverAll(reason: .foreground)
+
+        let calls = await ingestion.calls
+        let reason = await coordinator.lastReconciliationReason
+        XCTAssertEqual(calls, [.all, .recovery(nil)])
+        XCTAssertEqual(analysis.value, 1)
+        XCTAssertEqual(reason, .foreground)
+    }
+
     func testLifecycleRecoveryAnalyzesOnlyChangedThreadBatches() async throws {
         let db = try await seededDatabase()
         let ingestion = RecordingIngestion(

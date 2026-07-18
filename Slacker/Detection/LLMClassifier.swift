@@ -14,6 +14,54 @@ struct LLMClassifier {
         !guidance.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
+    /// Original seed retained so the migration can upgrade only untouched defaults.
+    static let initialDefaultGlobalGuidance = """
+    # Default attention policy
+
+    Surface unresolved messages that indicate:
+    - A service, system, workflow, or dependency is slow, down, degraded, unavailable, failing, or timing out.
+    - An issue is blocking work or causing customer, operational, financial, or other business impact.
+    - Someone needs an answer, action, review, approval, handoff, owner, or follow-up.
+    - A decision is still required before work can proceed.
+
+    Do not surface routine FYIs, status updates with no open action, social chatter, praise, completed work, or threads that already contain a concrete resolution.
+    Prefer the thread's current unresolved state over isolated keywords.
+    """
+
+    /// Editable guidance seeded for every installation. This complements the immutable
+    /// classifier contract below with a practical cross-company starting policy.
+    static let defaultGlobalGuidance = """
+    # Default attention policy
+
+    Identify Slack threads that currently require attention.
+
+    Surface a thread when its latest state indicates at least one of the following:
+    - A service, system, workflow, deployment, or dependency is failing, degraded, unavailable, slow, or timing out.
+    - An issue is blocking work or creating customer, operational, security, financial, or other business impact.
+    - Someone is waiting for an answer, action, investigation, review, approval, handoff, decision, owner, or follow-up.
+    - A question or request has not received a meaningful response.
+    - A promised action appears overdue based on an explicit deadline or a follow-up indicating delay.
+    - Ownership is missing, unclear, or disputed.
+    - A decision is preventing work from progressing.
+    - The thread remains unresolved despite attempted fixes or discussion.
+
+    Do not surface:
+    - Routine FYIs, announcements, Slack membership notifications, or informational updates with no open action.
+    - Social conversation, praise, or acknowledgments.
+    - Questions that received a complete answer.
+    - Issues with a confirmed resolution, completed action, or clear closure.
+    - Threads whose only urgency signals appear in older messages and have since been resolved.
+    - Requests that already have a clear owner and are progressing normally, unless they are explicitly overdue or blocked.
+
+    Evaluation rules:
+    1. Evaluate the root message and all replies in order. The final entry is the latest message.
+    2. Use only evidence present in the thread text and user identifiers. Do not invent deadlines, owners, or resolution status.
+    3. Prioritize the thread's current state over isolated keywords such as "error," "blocked," or "urgent."
+    4. Treat a thread as resolved only when the outcome or completed action is explicitly confirmed.
+    5. Do not assume that an acknowledgment such as "looking into it" resolves the issue.
+    6. If the thread is ambiguous, surface it only when there is credible evidence that someone still needs to act.
+    """
+
     /// Kept reusable so the evolution loop can compare a proposed guidance change with
     /// the exact classifier contract that is already in force.
     static let baseSystem = """

@@ -2,13 +2,15 @@ import Foundation
 import GRDB
 
 /// Event-driven synchronization. Socket Mode selects the smallest HTTP reconciliation
-/// needed for each event; cursor/thread gap recovery is reserved for launch, wake, and
-/// reconnect. There is deliberately no recurring timer or whole-database refresh.
+/// needed for each event; cursor/thread gap recovery is reserved for launch, wake,
+/// reconnect, and foreground activation. There is deliberately no recurring timer or
+/// whole-database refresh.
 actor SyncCoordinator {
     enum ReconciliationReason: String, Sendable {
         case launch
         case wake
         case reconnect
+        case foreground
     }
 
     struct SocketHandlers: Sendable {
@@ -176,7 +178,7 @@ actor SyncCoordinator {
         connectionStates[workspaceID] ?? .disconnected
     }
 
-    /// Queue one lifecycle gap-recovery pass. Overlapping wake/reconnect requests are
+    /// Queue one bounded gap-recovery pass. Overlapping lifecycle/foreground requests are
     /// coalesced; the caller that owns the drain processes anything queued while awaiting
     /// Slack. This is never invoked by a timer.
     func recoverAll(reason: ReconciliationReason) async {

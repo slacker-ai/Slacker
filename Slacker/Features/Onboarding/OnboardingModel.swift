@@ -26,6 +26,7 @@ final class OnboardingModel {
     enum Mode: Equatable { case firstRun, addWorkspace }
 
     private let service: SlackConnectionService
+    @ObservationIgnored private let locateCLI: (String) -> String?
     let mode: Mode
 
     var step: Step = .intro
@@ -37,7 +38,10 @@ final class OnboardingModel {
 
     // LLM selection (final onboarding step).
     var llmProvider: LLMProvider = .anthropic {
-        didSet { syncDefaultModelForProvider() }
+        didSet {
+            syncDefaultModelForProvider()
+            syncCLIPathForProvider()
+        }
     }
     var llmModel: String = LLMClientFactory.defaultModel(for: .anthropic)
     var llmAPIKey: String = ""
@@ -66,9 +70,14 @@ final class OnboardingModel {
     /// Called when the user finishes onboarding so the app can advance to the main UI.
     var onFinished: () -> Void = {}
 
-    init(service: SlackConnectionService, mode: Mode = .firstRun) {
+    init(
+        service: SlackConnectionService,
+        mode: Mode = .firstRun,
+        locateCLI: @escaping (String) -> String? = { BinaryLocator.locate($0) }
+    ) {
         self.service = service
         self.mode = mode
+        self.locateCLI = locateCLI
         // Adding a workspace skips the welcome intro.
         if mode == .addWorkspace { step = .manifestChoice }
     }
@@ -85,6 +94,16 @@ final class OnboardingModel {
         let knownDefaults = Set(LLMProvider.allCases.map { LLMClientFactory.defaultModel(for: $0) })
         guard current.isEmpty || knownDefaults.contains(current) else { return }
         llmModel = LLMClientFactory.defaultModel(for: llmProvider)
+    }
+
+    private func syncCLIPathForProvider() {
+        let binary: String
+        switch llmProvider {
+        case .codexCLI: binary = "codex"
+        case .claudeCode: binary = "claude"
+        default: return
+        }
+        cliPath = locateCLI(binary) ?? ""
     }
 
     // MARK: - Manifest

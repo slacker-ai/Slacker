@@ -19,6 +19,7 @@ final class AppRoot {
 
     @ObservationIgnored private var syncCoordinator: SyncCoordinator?
     @ObservationIgnored private var wakeObserver: NSObjectProtocol?
+    @ObservationIgnored private var activationObserver: NSObjectProtocol?
 
     /// Open-item badge for the menu bar (§8.1).
     var badgeCount: Int { mainViewModel?.surfacedCount ?? 0 }
@@ -93,7 +94,7 @@ final class AppRoot {
     // MARK: - Real-time sync
 
     /// Start Socket Mode once the user is connected. HTTP is retained only for bounded
-    /// gap recovery on launch, wake, and reconnect.
+    /// gap recovery on launch, wake, reconnect, and foreground activation.
     private func startSyncIfReady() {
         guard isOnboarded, syncCoordinator == nil else { return }
 
@@ -199,6 +200,22 @@ final class AppRoot {
             Task { @MainActor [weak self] in
                 guard let self, let coordinator = self.syncCoordinator else { return }
                 await coordinator.recoverAll(reason: .wake)
+                await self.mainViewModel?.reload()
+                await self.overviewViewModel?.reload()
+            }
+        }
+
+        // Socket Mode is the fast path, but Slack delivery can be unavailable or an
+        // event can land while the connection is being replaced. Returning to Slacker
+        // is a natural, bounded opportunity to reconcile those gaps without a timer.
+        activationObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didBecomeActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self, let coordinator = self.syncCoordinator else { return }
+                await coordinator.recoverAll(reason: .foreground)
                 await self.mainViewModel?.reload()
                 await self.overviewViewModel?.reload()
             }

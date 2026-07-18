@@ -14,7 +14,7 @@ struct AddChannelView: View {
                 Button {
                     Task { await model.findNewChannels() }
                 } label: {
-                    Label("Find new channels", systemImage: "magnifyingglass")
+                    Label("Refresh Channels", systemImage: "magnifyingglass")
                 }
                 .disabled(model.isFindingChannels)
                 Button("Done") { model.isShowingAddChannel = false }

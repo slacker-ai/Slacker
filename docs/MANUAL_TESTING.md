@@ -135,7 +135,7 @@ Pass criteria:
 ## 4. Core detection scenarios
 
 Socket Mode should process these without clicking anything. There is no message Refresh
-button; lifecycle gap recovery is automatic.
+button; bounded gap recovery runs automatically at lifecycle and foreground boundaries.
 
 | # | Send in a watched channel | Expected | Log line |
 |---|---|---|---|

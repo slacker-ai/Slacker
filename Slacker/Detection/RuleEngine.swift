@@ -182,7 +182,7 @@ struct RuleEngine {
         }
 
         // Problem reports ("X is failing", "trying to … but …") are implicit blockers.
-        if contains(text, problemPhrases) || isStruggleReport(text) {
+        if contains(text, problemPhrases) || isStruggleReport(text) || isImpactPreventionReport(text) {
             return RuleVerdict(messageClass: .blocker, confidence: 0.8)
         }
 
@@ -223,6 +223,25 @@ struct RuleEngine {
         guard text.contains("trying to") || text.contains("attempting to") else { return false }
         return text.contains("but ") || text.contains("fail") || text.contains("error")
             || text.contains("can't") || text.contains("cannot") || text.contains("won't")
+    }
+
+    /// Matches an active problem that prevents an outcome, while avoiding positive text
+    /// such as "this guard prevents an issue from occurring" (problem must come first).
+    private func isImpactPreventionReport(_ text: String) -> Bool {
+        let words = text.split { !$0.isLetter && !$0.isNumber }.map(String.init)
+        let problemWords: Set<String> = [
+            "issue", "issues", "problem", "problems", "failure", "failures",
+            "error", "errors", "outage", "outages",
+        ]
+        let preventionWords: Set<String> = ["prevent", "prevents", "prevented", "preventing"]
+
+        guard let problemIndex = words.firstIndex(where: problemWords.contains),
+              let preventionIndex = words.firstIndex(where: preventionWords.contains),
+              problemIndex < preventionIndex,
+              words[(preventionIndex + 1)...].contains("from") else {
+            return false
+        }
+        return true
     }
 }
 

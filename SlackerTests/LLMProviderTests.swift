@@ -139,6 +139,52 @@ final class BinaryLocatorTests: XCTestCase {
     }
 }
 
+@MainActor
+final class OnboardingModelCLITests: XCTestCase {
+    private func makeModel(locations: [String: String]) throws -> OnboardingModel {
+        let database = try AppDatabase.makeInMemory()
+        let client = SlackClient(
+            transport: StubTransport { _ in (jsonData("{}"), makeHTTPResponse(200)) },
+            sleep: { _ in }
+        )
+        return OnboardingModel(
+            service: SlackConnectionService(client: client, database: database),
+            locateCLI: { locations[$0] }
+        )
+    }
+
+    func testSelectingCLIProviderPopulatesDetectedPathAndRemainsEditable() throws {
+        let model = try makeModel(locations: ["codex": "/opt/homebrew/bin/codex"])
+
+        model.llmProvider = .codexCLI
+
+        XCTAssertEqual(model.cliPath, "/opt/homebrew/bin/codex")
+        model.cliPath = "/custom/bin/codex"
+        XCTAssertEqual(model.cliPath, "/custom/bin/codex")
+    }
+
+    func testSwitchingCLIProvidersRefreshesDetectedPath() throws {
+        let model = try makeModel(locations: [
+            "codex": "/opt/homebrew/bin/codex",
+            "claude": "/usr/local/bin/claude",
+        ])
+
+        model.llmProvider = .codexCLI
+        model.llmProvider = .claudeCode
+
+        XCTAssertEqual(model.cliPath, "/usr/local/bin/claude")
+    }
+
+    func testMissingCLILeavesEditablePathEmpty() throws {
+        let model = try makeModel(locations: [:])
+        model.cliPath = "/stale/path"
+
+        model.llmProvider = .codexCLI
+
+        XCTAssertEqual(model.cliPath, "")
+    }
+}
+
 final class LLMClientFactoryTests: XCTestCase {
     private func settings(_ provider: LLMProvider, model: String = "m", cliOverride: String = "") -> AppSettings {
         var s = AppSettings()

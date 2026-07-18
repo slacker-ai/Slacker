@@ -205,12 +205,12 @@ struct OnboardingView: View {
             BrandLogo(size: 88)
 
             VStack(spacing: 9) {
-                Text(model.mode == .addWorkspace ? "Add another workspace" : "Your Slack catch-up, minus the noise")
+                Text(model.mode == .addWorkspace ? "Add another workspace" : "Slack minus the noise")
                     .font(Brand.display(32))
                     .multilineTextAlignment(.center)
                 Text(model.mode == .addWorkspace
                      ? "Connect another read-only Slack app without changing your existing workspace."
-                     : "Slacker watches the channels you choose, surfaces open loops in real time, and keeps everything on your Mac.")
+                     : "Slacker watches the channels you choose, only surfaces the important thread, and keeps EVERYTHING on your mac.")
                     .font(.title3)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
@@ -610,7 +610,7 @@ struct OnboardingView: View {
                 }
 
                 if model.llmIsCLI {
-                    formField("CLI path", help: "Optional. Slacker auto-detects common install locations.") {
+                    formField("CLI path", help: "Auto-detected when you select a CLI provider. Edit it if needed.") {
                         TextField("CLI path", text: $model.cliPath, prompt: Text("/opt/homebrew/bin/…"))
                             .textFieldStyle(.roundedBorder)
                     }

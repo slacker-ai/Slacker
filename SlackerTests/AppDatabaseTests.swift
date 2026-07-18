@@ -20,4 +20,18 @@ final class AppDatabaseTests: XCTestCase {
         _ = try AppDatabase(queue)
         XCTAssertNoThrow(try AppDatabase(queue))
     }
+
+    func testMigrationsSeedEditableGlobalGuidance() throws {
+        let appDB = try AppDatabase.makeInMemory()
+
+        let guidance = try appDB.dbWriter.read { db in
+            try LearnedGuidance
+                .filter(Column("channelID") == nil)
+                .filter(Column("status") == PatternStatus.approved.rawValue)
+                .fetchOne(db)
+        }
+
+        XCTAssertEqual(guidance?.text, LLMClassifier.defaultGlobalGuidance)
+        XCTAssertEqual(guidance?.version, 1)
+    }
 }

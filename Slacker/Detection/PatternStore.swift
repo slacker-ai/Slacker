@@ -553,11 +553,26 @@ struct PatternStore {
     /// Active guidance is a Markdown-like document. Compare proposals with each rule line,
     /// not only with the whole cumulative document, whose unrelated rules dilute overlap.
     private static func guidanceSegments(_ text: String) -> [String] {
-        let lines = text
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let learnedText: String
+        if trimmed == LLMClassifier.defaultGlobalGuidance
+            || trimmed == LLMClassifier.initialDefaultGlobalGuidance {
+            // The broad seed describes the classifier's job. Treating each generic line as
+            // learned coverage suppresses specific rules such as meeting or access guidance.
+            return []
+        } else if trimmed.hasPrefix(LLMClassifier.defaultGlobalGuidance + "\n") {
+            learnedText = String(trimmed.dropFirst(LLMClassifier.defaultGlobalGuidance.count))
+        } else if trimmed.hasPrefix(LLMClassifier.initialDefaultGlobalGuidance + "\n") {
+            learnedText = String(trimmed.dropFirst(LLMClassifier.initialDefaultGlobalGuidance.count))
+        } else {
+            learnedText = trimmed
+        }
+
+        let lines = learnedText
             .split(whereSeparator: \.isNewline)
             .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
-        return lines.isEmpty ? [text] : lines
+        return lines.isEmpty ? [learnedText] : lines
     }
 
     private static func guidanceSimilarity(_ lhs: String, _ rhs: String) -> Double {

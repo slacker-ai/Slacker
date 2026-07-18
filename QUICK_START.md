@@ -47,8 +47,9 @@ token. There is no shared OAuth app or Slacker-operated service.
 10. Connect your AI provider.
 
 Both Slack tokens are stored per workspace in Keychain. Slacker only processes selected
-channels. New activity arrives over Socket Mode; HTTP catch-up runs only on launch, wake,
-and reconnect. Closing the window leaves the menu-bar app connected; after a real Quit,
+channels. New activity arrives over Socket Mode; HTTP catch-up runs on launch, wake,
+reconnect, and foreground activation. Closing the window leaves the menu-bar app connected;
+after a real Quit,
 the next launch resumes from durable per-channel cursors.
 
 ## Slack Access Variants

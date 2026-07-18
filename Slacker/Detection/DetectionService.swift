@@ -229,8 +229,8 @@ struct DetectionService {
     }
 
     /// Rules first. Ambiguous candidates go to the LLM, and approved guidance gets a
-    /// chance to veto otherwise-confident rule hits. Without guidance, confident rule
-    /// results never incur an LLM call.
+    /// chance to promote rule misses or veto otherwise-confident rule hits. Without
+    /// guidance, confident rule results and ordinary context never incur an LLM call.
     private func classify(
         root: Message,
         replies: [Message],
@@ -246,17 +246,25 @@ struct DetectionService {
         )
 
         guard let llmClassifier,
-              ruleResult.state == .review || (ruleResult.state == .surfaced && llmClassifier.hasGuidance) else {
+              ruleResult.state == .review || llmClassifier.hasGuidance else {
             if ruleResult.state == .review {
                 Log.info("LLM classifier skipped[#\(channel.name) ts=\(root.ts)]: no LLM configured; leaving rules review verdict.")
             }
             return ruleResult
         }
 
-        // Escalate ambiguous rules, or let approved guidance review a confident rule hit.
+        // Escalate ambiguous rules, or let approved guidance promote/suppress a rule result.
         // A parse/call failure always preserves the rule result.
         let context = threadContext(root: root, replies: replies)
-        let reason = ruleResult.state == .surfaced ? "applying approved guidance to rules surfaced verdict" : "escalating rules review verdict"
+        let reason: String
+        switch ruleResult.state {
+        case .surfaced:
+            reason = "applying approved guidance to rules surfaced verdict"
+        case .review:
+            reason = "escalating rules review verdict"
+        default:
+            reason = "applying approved guidance to rules miss"
+        }
         Log.info("LLM classifier used[#\(channel.name) ts=\(root.ts)]: \(reason).")
         let verdict: RuleVerdict
         do {
@@ -550,11 +558,19 @@ struct DetectionService {
         )
 
         guard let llmClassifier,
-              ruleResult.state == .review || (ruleResult.state == .surfaced && llmClassifier.hasGuidance) else {
+              ruleResult.state == .review || llmClassifier.hasGuidance else {
             return ruleResult
         }
 
-        let reason = ruleResult.state == .surfaced ? "applying approved guidance to regex reopen verdict" : "escalating regex reopen review verdict"
+        let reason: String
+        switch ruleResult.state {
+        case .surfaced:
+            reason = "applying approved guidance to regex reopen verdict"
+        case .review:
+            reason = "escalating regex reopen review verdict"
+        default:
+            reason = "applying approved guidance to regex reopen miss"
+        }
         Log.info("LLM reopen classifier used[#\(channel.name) ts=\(message.ts)]: \(reason).")
         do {
             let text = SlackTextSanitizer.stripFencedBlocks(message.text)

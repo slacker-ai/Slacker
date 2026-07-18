@@ -174,7 +174,8 @@ struct IngestionService: SlackIngestionServing, @unchecked Sendable {
         return Dictionary(uniqueKeysWithValues: channelResults.filter { !$0.1.isEmpty })
     }
 
-    /// At launch, wake, and reconnect, compare full snapshots for tracked item threads.
+    /// At launch, wake, reconnect, and foreground activation, compare full snapshots for
+    /// tracked item threads.
     /// Only changed roots are returned, grouped into small batches for targeted analysis.
     func recoverTrackedItemThreads(workspaceID: String?) async throws -> [[String: Set<String>]] {
         let workspaces = try await database.dbWriter.read { db -> [Workspace] in

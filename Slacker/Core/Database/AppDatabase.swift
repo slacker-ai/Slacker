@@ -340,6 +340,48 @@ struct AppDatabase {
             }
         }
 
+        migrator.registerMigration("v19_default_global_guidance") { db in
+            let globalScope = Column("channelID") == nil
+            let hasApprovedGlobalGuidance = try LearnedGuidance
+                .filter(Column("status") == PatternStatus.approved.rawValue)
+                .filter(globalScope)
+                .fetchCount(db) > 0
+            guard !hasApprovedGlobalGuidance else { return }
+
+            let maxVersion = try LearnedGuidance
+                .filter(globalScope)
+                .select(max(Column("version")), as: Int.self)
+                .fetchOne(db) ?? 0
+            let timestamp = Date()
+            try LearnedGuidance(
+                id: UUID().uuidString,
+                channelID: nil,
+                text: LLMClassifier.initialDefaultGlobalGuidance,
+                status: .approved,
+                version: maxVersion + 1,
+                createdAt: timestamp,
+                decidedAt: timestamp
+            ).insert(db)
+        }
+
+        migrator.registerMigration("v20_expand_default_global_guidance") { db in
+            let currentDefault = try LearnedGuidance
+                .filter(Column("status") == PatternStatus.approved.rawValue)
+                .filter(Column("channelID") == nil)
+                .order(Column("version").desc)
+                .fetchOne(db)
+            guard let currentDefault,
+                  currentDefault.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                    == LLMClassifier.initialDefaultGlobalGuidance
+                        .trimmingCharacters(in: .whitespacesAndNewlines) else {
+                return
+            }
+
+            _ = try LearnedGuidance
+                .filter(key: currentDefault.id)
+                .updateAll(db, Column("text").set(to: LLMClassifier.defaultGlobalGuidance))
+        }
+
         return migrator
     }
 }

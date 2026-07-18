@@ -175,7 +175,7 @@ final class PatternStoreTests: XCTestCase {
         let approvedCount = try await db.dbWriter.read {
             try LearnedGuidance.filter(Column("status") == PatternStatus.approved.rawValue).fetchCount($0)
         }
-        XCTAssertEqual(approvedCount, 2, "Manual edits are versioned, not destructive.")
+        XCTAssertEqual(approvedCount, 3, "The seeded default and manual edits are versioned, not destructive.")
     }
 
     func testSaveActiveGuidanceDocumentSkipsUnchangedText() async throws {
@@ -188,7 +188,7 @@ final class PatternStoreTests: XCTestCase {
         let approvedCount = try await db.dbWriter.read {
             try LearnedGuidance.filter(Column("status") == PatternStatus.approved.rawValue).fetchCount($0)
         }
-        XCTAssertEqual(approvedCount, 1, "Auto-save must not create duplicate versions for unchanged text.")
+        XCTAssertEqual(approvedCount, 2, "Auto-save must not create duplicate versions for unchanged text.")
     }
 
     func testManualApprovedPhraseFeedsActivePhraseBankImmediately() async throws {
@@ -420,7 +420,7 @@ final class PatternStoreTests: XCTestCase {
                 .fetchCount($0)
         }
         let duplicate = try await db.dbWriter.read { try LearnedGuidance.fetchOne($0, key: "duplicate") }
-        XCTAssertEqual(approvedCount, 1)
+        XCTAssertEqual(approvedCount, 2)
         XCTAssertEqual(duplicate?.status, .retired)
     }
 }
@@ -541,7 +541,7 @@ final class LearnedPatternsModelTests: XCTestCase {
         let channelGuidance = try await store.activeGuidance(forChannelID: "C1")
         let globalGuidance = try await store.activeGuidanceDocument()
         XCTAssertTrue(channelGuidance.contains("meeting-recording"))
-        XCTAssertTrue(globalGuidance.isEmpty)
+        XCTAssertEqual(globalGuidance, LLMClassifier.defaultGlobalGuidance)
         XCTAssertEqual(model.activeChannelGuidance.first?.channelID, "C1")
     }
 
@@ -791,7 +791,12 @@ final class PatternEvolutionServiceTests: XCTestCase {
             XCTAssertEqual(p.supportingLabelCount, 1, "Single-example proposals report a count of 1.")
         }
         // Guidance proposed too.
-        let guidance = try await db.dbWriter.read { try LearnedGuidance.fetchAll($0) }
+        let guidance = try await db.dbWriter.read {
+            try LearnedGuidance
+                .filter(Column("channelID") == "C1")
+                .filter(Column("status") == PatternStatus.approved.rawValue)
+                .fetchAll($0)
+        }
         XCTAssertEqual(guidance.count, 1)
         XCTAssertEqual(guidance.first?.status, .approved)
         XCTAssertEqual(guidance.first?.channelID, "C1")
@@ -806,7 +811,12 @@ final class PatternEvolutionServiceTests: XCTestCase {
 
         let patterns = try await db.dbWriter.read { try LearnedPattern.fetchCount($0) }
         XCTAssertEqual(patterns, 0)
-        let guidance = try await db.dbWriter.read { try LearnedGuidance.fetchAll($0) }
+        let guidance = try await db.dbWriter.read {
+            try LearnedGuidance
+                .filter(Column("channelID") == "C1")
+                .filter(Column("status") == PatternStatus.approved.rawValue)
+                .fetchAll($0)
+        }
         XCTAssertEqual(guidance.count, 1)
         XCTAssertEqual(guidance.first?.status, .approved)
     }
@@ -882,7 +892,9 @@ final class PatternEvolutionServiceTests: XCTestCase {
             source: .markResolved
         )
 
-        let guidanceCount = try await db.dbWriter.read { try LearnedGuidance.fetchCount($0) }
+        let guidanceCount = try await db.dbWriter.read {
+            try LearnedGuidance.filter(Column("channelID") == "C1").fetchCount($0)
+        }
         XCTAssertEqual(stub.callCount, 1)
         XCTAssertEqual(guidanceCount, 0, "A restatement of a built-in prompt rule must not become a review card.")
     }
@@ -903,7 +915,9 @@ final class PatternEvolutionServiceTests: XCTestCase {
             source: .dismissal
         )
 
-        let guidanceCount = try await db.dbWriter.read { try LearnedGuidance.fetchCount($0) }
+        let guidanceCount = try await db.dbWriter.read {
+            try LearnedGuidance.filter(Column("channelID") == "C1").fetchCount($0)
+        }
         XCTAssertEqual(guidanceCount, 1)
     }
 
@@ -924,7 +938,9 @@ final class PatternEvolutionServiceTests: XCTestCase {
             channelID: "C1", messageTS: "2", verdict: .ignore, source: .dismissal
         )
 
-        let guidance = try await db.dbWriter.read { try LearnedGuidance.fetchAll($0) }
+        let guidance = try await db.dbWriter.read {
+            try LearnedGuidance.filter(Column("channelID") == "C1").fetchAll($0)
+        }
         XCTAssertEqual(stub.callCount, 2)
         XCTAssertEqual(guidance.count, 1, "normal rewording must not create another pending card")
         XCTAssertTrue(
@@ -954,7 +970,9 @@ final class PatternEvolutionServiceTests: XCTestCase {
 
         let patterns = try await db.dbWriter.read { try LearnedPattern.fetchAll($0) }
         XCTAssertTrue(patterns.isEmpty, "Resolve-click evolution must not learn the original ask as a new trigger phrase.")
-        let guidance = try await db.dbWriter.read { try LearnedGuidance.fetchAll($0) }
+        let guidance = try await db.dbWriter.read {
+            try LearnedGuidance.filter(Column("channelID") == "C1").fetchAll($0)
+        }
         XCTAssertEqual(guidance.count, 1)
         XCTAssertTrue(guidance.first?.text.contains("paging now") == true)
     }
@@ -978,7 +996,9 @@ final class PatternEvolutionServiceTests: XCTestCase {
         XCTAssertTrue(stub.lastRequest?.user.contains(":white_check_mark: x1 resolved_signal") == true)
         XCTAssertTrue(stub.lastRequest?.user.contains(":eyes: x1 open_signal") == true)
 
-        let guidance = try await db.dbWriter.read { try LearnedGuidance.fetchAll($0) }
+        let guidance = try await db.dbWriter.read {
+            try LearnedGuidance.filter(Column("channelID") == "C1").fetchAll($0)
+        }
         XCTAssertEqual(guidance.count, 1)
         XCTAssertTrue(guidance.first?.text.contains("white_check_mark") == true)
     }
@@ -1025,7 +1045,9 @@ final class PatternEvolutionServiceTests: XCTestCase {
         XCTAssertTrue(stub.lastRequest?.user.contains("false alarm, this was a vendor status-page blip") == true)
         XCTAssertTrue(stub.lastRequest?.user.contains("source: dismissal") == true)
 
-        let guidance = try await db.dbWriter.read { try LearnedGuidance.fetchAll($0) }
+        let guidance = try await db.dbWriter.read {
+            try LearnedGuidance.filter(Column("channelID") == "C1").fetchAll($0)
+        }
         XCTAssertEqual(guidance.count, 1)
         XCTAssertTrue(guidance.first?.text.contains("false alarm") == true)
     }

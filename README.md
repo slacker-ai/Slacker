@@ -38,7 +38,8 @@ development; for enterprise inquiries, contact Daanish Hindustani.
 - **Daily overview**: per-channel summaries provide context without replacing the
   action list.
 - **Real-time Slack delivery**: Socket Mode receives watched-channel activity without
-  scheduled polling; launch, wake, and reconnect use bounded, changed-root HTTP gap recovery.
+  scheduled polling; launch, wake, reconnect, and foreground activation use bounded,
+  changed-root HTTP gap recovery.
 - **Bring your own Slack app**: create an internal Slack app from the included
   manifest and provide its read-only `xoxp-` user token plus an `xapp-` Socket Mode token.
 - **Bring your own LLM provider**: configure the provider or local/CLI model you

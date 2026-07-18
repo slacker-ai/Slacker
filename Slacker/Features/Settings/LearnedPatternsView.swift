@@ -192,7 +192,7 @@ struct LearnedPatternsView: View {
     private var activeGuidanceSection: some View {
         Section("Global AI guidance document") {
             VStack(alignment: .leading, spacing: 8) {
-                Text("Applied to every Slack channel before its channel-specific guidance.")
+                Text("Starts with a generic attention policy and applies to every Slack channel before its channel-specific guidance. Fully editable.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 TextEditor(text: $model.activeGuidanceDraft)
