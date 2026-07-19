@@ -27,21 +27,15 @@ final class OverviewViewModel {
     private let database: AppDatabase
     private let now: () -> Date
     var channels: [ChannelOverview] = []
-
-    /// Triggers an immediate poll+summarize cycle (wired by `AppRoot`).
-    @ObservationIgnored var onRefresh: (() async -> Void)?
-    var isRefreshing = false
+    var activeChannels: [ChannelOverview] {
+        channels.filter { channel in
+            channel.summary?.isEmpty == false || channel.openCount > 0 || channel.lastActivityTS != nil
+        }
+    }
 
     init(database: AppDatabase, now: @escaping () -> Date = { Date() }) {
         self.database = database
         self.now = now
-    }
-
-    func refreshNow() async {
-        guard let onRefresh, !isRefreshing else { return }
-        isRefreshing = true
-        await onRefresh()
-        isRefreshing = false
     }
 
     func reload() async {

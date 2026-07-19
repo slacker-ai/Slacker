@@ -4,6 +4,7 @@ import SwiftUI
 /// triage here ("This matters" / "Ignore") feeds the calibration flywheel (§7.5).
 struct ReviewQueueView: View {
     @Bindable var model: MainViewModel
+    var showsNavigationChrome = true
 
     var body: some View {
         Group {
@@ -27,6 +28,6 @@ struct ReviewQueueView: View {
                 }
             }
         }
-        .navigationTitle("Review queue")
+        .navigationTitle(showsNavigationChrome ? "Review queue" : "")
     }
 }

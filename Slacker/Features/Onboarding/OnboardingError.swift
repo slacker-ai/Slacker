@@ -3,6 +3,14 @@ import Foundation
 /// Maps low-level errors to actionable, friendly copy (§5.3 — never a dead end).
 enum OnboardingError {
     static func message(for error: Error) -> String {
+        if let connectionError = error as? SlackConnectionServiceError {
+            switch connectionError {
+            case .invalidAppToken:
+                return "That Socket Mode token didn't work. Paste the app-level token that starts with \"xapp-\" and has connections:write."
+            case .appTokenRejected(let code):
+                return "Slack rejected the Socket Mode app token (\(code)). Create a new app-level token with connections:write and try again."
+            }
+        }
         if let slack = error as? SlackClientError {
             switch slack {
             case .api(let code):

@@ -1,18 +1,19 @@
 import SwiftUI
 
-/// Review screen for the self-evolving loop (§7.5). Surfaces mined proposals — rule
-/// phrases and LLM guidance — for human approval, with a precision delta so a regressing
-/// phrase is flagged before it goes live. Reached via a link from Settings.
+/// Settings editor for automatically learned phrases and global/channel prompt overlays.
 struct LearnedPatternsView: View {
     @Bindable var model: LearnedPatternsModel
+    @State private var isAddingPhrase = false
+    @State private var areApprovedPhrasesExpanded = false
+    @State private var channelSearchText = ""
+    @State private var expandedGuidanceChannelID: String?
 
     var body: some View {
         Form {
             introSection
-            if !model.proposedPatterns.isEmpty { proposedPatternsSection }
-            if !model.proposedGuidance.isEmpty { proposedGuidanceSection }
-            if !model.approvedPatterns.isEmpty { approvedPatternsSection }
+            approvedPhrasesSection
             activeGuidanceSection
+            if !model.channels.isEmpty { channelGuidanceSection }
             if model.hasAnything { revertSection }
         }
         .formStyle(.grouped)
@@ -22,112 +23,181 @@ struct LearnedPatternsView: View {
 
     private var introSection: some View {
         Section {
-            Text("As you triage items, Slacker learns your team's language and proposes new detection phrases and AI guidance. Nothing affects detection until you approve it here.")
+            Text("User actions update these prompts automatically. You can edit every active document directly; changes save automatically.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
             if !model.hasAnything {
-                Text("No proposals yet. Resolve, dismiss, or confirm a handful of items and check back after the next refresh.")
+                Text("No learned phrases or guidance yet. Add a phrase manually to teach Slacker team-specific language.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
         }
     }
 
-    // MARK: - Proposed phrases
+    // MARK: - Approved phrases
 
-    private var proposedPatternsSection: some View {
-        Section("Proposed phrases") {
-            ForEach(model.proposedPatterns) { pattern in
-                proposedPatternRow(pattern)
+    private var approvedPhrasesSection: some View {
+        Section {
+            DisclosureGroup(isExpanded: $areApprovedPhrasesExpanded) {
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack {
+                        Spacer()
+                        Button {
+                            withAnimation { isAddingPhrase.toggle() }
+                        } label: {
+                            Label(
+                                isAddingPhrase ? "Cancel" : "Add phrase",
+                                systemImage: isAddingPhrase ? "xmark" : "plus"
+                            )
+                        }
+                        .buttonStyle(.borderless)
+                    }
+
+                    if isAddingPhrase {
+                        addPhraseForm
+                        if !model.approvedPatterns.isEmpty { Divider() }
+                    }
+
+                    if model.approvedPatterns.isEmpty {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("No approved phrases yet.")
+                                .foregroundStyle(.secondary)
+                            Text("Add a specific multi-word phrase to extend a detection type immediately.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(.vertical, 4)
+                    } else {
+                        ForEach(model.approvedPatterns) { pattern in
+                            approvedPhraseRow(pattern)
+                        }
+                    }
+
+                    Text("Phrases go live immediately after saving. Raw regex is intentionally not supported.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.top, 8)
+            } label: {
+                HStack {
+                    Text("Approved phrases")
+                    Spacer()
+                    Text("\(model.approvedPatterns.count)")
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                }
             }
         }
     }
 
-    private func proposedPatternRow(_ pattern: LearnedPattern) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Text("“\(pattern.phrase)”").font(.body).bold()
-                Spacer()
-                Text(pattern.bucket.displayName)
-                    .font(.caption).foregroundStyle(.secondary)
+    private var addPhraseForm: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Enter phrase")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                LeftAlignedPhraseField(
+                    placeholder: "red alert on",
+                    text: $model.manualPhraseDraft
+                ) {
+                    model.manualPhraseSaveStatus = ""
+                }
+                .frame(height: 24)
+                if let message = model.manualPhraseValidationMessage {
+                    Text(message)
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
             }
-            Text(model.displayName(forChannelID: pattern.channelID))
-                .font(.caption).foregroundStyle(.secondary)
-            if let rationale = pattern.rationale, !rationale.isEmpty {
-                Text(rationale).font(.caption).foregroundStyle(.secondary)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Channel")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Picker("Channel", selection: $model.manualPhraseChannelSelection) {
+                    Text("All channels (default)").tag(LearnedPatternsModel.globalChannelSelection)
+                    ForEach(model.channels) { channel in
+                        Text("#\(channel.name)").tag(channel.id)
+                    }
+                }
+                .labelsHidden()
             }
-            deltaView(for: pattern)
-            HStack {
-                Button("Approve") { Task { await model.approve(pattern) } }
-                    .buttonStyle(.borderedProminent)
-                Button("Reject") { Task { await model.reject(pattern) } }
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Type")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Picker("Type", selection: $model.manualPhraseBucket) {
+                    ForEach(RuleBucket.allCases, id: \.self) { bucket in
+                        Text(bucket.displayName).tag(bucket)
+                    }
+                }
+                .labelsHidden()
+                if model.manualPhraseBucket == .dismiss {
+                    Text("Messages containing this phrase will be dismissed instead of surfaced.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
-            .padding(.top, 2)
+
+            HStack(spacing: 8) {
+                Button {
+                    Task {
+                        await model.saveManualPhrase()
+                        if model.manualPhraseSaveStatus == "Saved" {
+                            isAddingPhrase = false
+                        }
+                    }
+                } label: {
+                    Label("Save phrase", systemImage: "checkmark")
+                }
+                .buttonStyle(.borderedProminent)
+
+                Button("Cancel") {
+                    isAddingPhrase = false
+                    model.manualPhraseDraft = ""
+                    model.manualPhraseSaveStatus = ""
+                }
+                .buttonStyle(.borderless)
+
+                if !model.manualPhraseSaveStatus.isEmpty {
+                    Text(model.manualPhraseSaveStatus)
+                        .font(.caption)
+                        .foregroundStyle(model.manualPhraseSaveStatus == "Saved" ? Color.secondary : Color.orange)
+                }
+            }
+            .controlSize(.small)
         }
         .padding(.vertical, 4)
     }
 
-    @ViewBuilder
-    private func deltaView(for pattern: LearnedPattern) -> some View {
-        if let delta = model.deltas[pattern.id] {
-            let pct: (Double) -> String = { "\(Int(($0 * 100).rounded()))%" }
-            HStack(spacing: 6) {
-                Image(systemName: delta.regresses ? "exclamationmark.triangle.fill" : "checkmark.seal")
-                    .foregroundStyle(delta.regresses ? .orange : .green)
-                Text("Precision \(pct(delta.beforePrecision)) → \(pct(delta.afterPrecision)), false positives \(pct(delta.beforeFalsePositiveRate)) → \(pct(delta.afterFalsePositiveRate)) over \(delta.sampleCount) labeled")
-                    .font(.caption2)
-                    .foregroundStyle(delta.regresses ? .orange : .secondary)
+    private func approvedPhraseRow(_ pattern: LearnedPattern) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: pattern.source == .manual ? "person.crop.circle.badge.checkmark" : "wand.and.stars")
+                .foregroundStyle(Brand.primary)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("\"\(pattern.phrase)\"")
+                    .font(.body.weight(.semibold))
+                Text("\(pattern.bucket.displayName) · \(model.displayName(forChannelID: pattern.channelID))")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
-        } else {
-            Text("Not enough labeled examples to estimate precision impact.")
-                .font(.caption2).foregroundStyle(.secondary)
-        }
-    }
-
-    // MARK: - Approved phrases
-
-    private var approvedPatternsSection: some View {
-        Section("Active phrases") {
-            ForEach(model.approvedPatterns) { pattern in
-                HStack {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("“\(pattern.phrase)”")
-                        Text("\(pattern.bucket.displayName) · \(model.displayName(forChannelID: pattern.channelID))")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    Button("Retire") { Task { await model.retire(pattern) } }
-                        .buttonStyle(.borderless)
-                }
+            Spacer()
+            Button(role: .destructive) {
+                Task { await model.retire(pattern) }
+            } label: {
+                Image(systemName: "trash")
             }
+            .buttonStyle(.borderless)
+            .help("Retire this phrase")
         }
-    }
-
-    // MARK: - Guidance
-
-    private var proposedGuidanceSection: some View {
-        Section("Proposed AI guidance") {
-            ForEach(model.proposedGuidance) { guidance in
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(model.displayName(forChannelID: guidance.channelID))
-                        .font(.caption).foregroundStyle(.secondary)
-                    Text(guidance.text).font(.callout)
-                    HStack {
-                        Button("Append to document") { Task { await model.approve(guidance) } }
-                            .buttonStyle(.borderedProminent)
-                        Button("Reject") { Task { await model.reject(guidance) } }
-                    }
-                    .padding(.top, 2)
-                }
-                .padding(.vertical, 4)
-            }
-        }
+        .padding(.vertical, 3)
     }
 
     private var activeGuidanceSection: some View {
-        Section("Active AI guidance document") {
+        Section("Global AI guidance document") {
             VStack(alignment: .leading, spacing: 8) {
-                Text("This is the single guidance document appended to AI classification and thread-resolution prompts. Edit it directly; proposed guidance can append new rules here. Changes save automatically.")
+                Text("Starts with a generic attention policy and applies to every Slack channel before its channel-specific guidance. Fully editable.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 TextEditor(text: $model.activeGuidanceDraft)
@@ -146,13 +216,105 @@ struct LearnedPatternsView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     Spacer()
+                    Text("\(model.activeGuidanceDraft.count) characters")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
+            }
+        }
+    }
+
+    private var channelGuidanceSection: some View {
+        Section {
+            VStack(alignment: .leading, spacing: 8) {
+                ChannelSearchField(text: $channelSearchText)
+                    .frame(height: 24)
+
+                if filteredGuidanceChannels.isEmpty {
+                    Text("No channels match “\(channelSearchText)”.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .padding(.vertical, 6)
+                } else {
+                    ForEach(filteredGuidanceChannels) { channel in
+                        DisclosureGroup(isExpanded: guidanceExpansionBinding(for: channel.id)) {
+                            channelGuidanceEditor
+                                .padding(.top, 8)
+                        } label: {
+                            Label(channel.name, systemImage: channel.isPrivate ? "lock.fill" : "number")
+                                .font(.body.weight(.medium))
+                        }
+                    }
+                }
+            }
+        } header: {
+            Text("Channel AI guidance documents")
+        } footer: {
+            Text("Expand a channel to view or edit its guidance. Only one channel can be edited at a time.")
+        }
+    }
+
+    private var filteredGuidanceChannels: [Channel] {
+        let query = channelSearchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        return model.channels
+            .filter {
+                query.isEmpty
+                    || $0.name.localizedCaseInsensitiveContains(query)
+                    || "#\($0.name)".localizedCaseInsensitiveContains(query)
+            }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    private func guidanceExpansionBinding(for channelID: String) -> Binding<Bool> {
+        Binding(
+            get: { expandedGuidanceChannelID == channelID },
+            set: { isExpanded in
+                if isExpanded {
+                    expandedGuidanceChannelID = channelID
+                    Task { await model.selectGuidanceChannel(channelID) }
+                } else if expandedGuidanceChannelID == channelID {
+                    expandedGuidanceChannelID = nil
+                }
+            }
+        )
+    }
+
+    private var channelGuidanceEditor: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            TextEditor(text: $model.channelGuidanceDraft)
+                .font(.system(.body, design: .monospaced))
+                .padding(8)
+                .frame(minHeight: 180)
+                .overlay(RoundedRectangle(cornerRadius: 6).stroke(.quaternary))
+                .onChange(of: model.channelGuidanceDraft) { _, _ in
+                    model.channelGuidanceDidChange()
+                }
+
+            HStack {
+                Label(model.channelGuidanceSaveStatus, systemImage: channelGuidanceStatusIcon)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Text("\(model.effectiveLearnedCharacterCount) effective learned characters")
+                    .font(.caption)
+                    .foregroundStyle(
+                        model.effectiveLearnedCharacterCount >= PatternEvolutionService.condensationThreshold
+                            ? .orange : .secondary
+                    )
             }
         }
     }
 
     private var activeGuidanceStatusIcon: String {
         switch model.activeGuidanceSaveStatus {
+        case "Saved": "checkmark.circle"
+        case "Save failed": "exclamationmark.triangle"
+        default: "arrow.triangle.2.circlepath"
+        }
+    }
+
+    private var channelGuidanceStatusIcon: String {
+        switch model.channelGuidanceSaveStatus {
         case "Saved": "checkmark.circle"
         case "Save failed": "exclamationmark.triangle"
         default: "arrow.triangle.2.circlepath"
@@ -167,6 +329,111 @@ struct LearnedPatternsView: View {
                 Label("Revert all learned patterns", systemImage: "arrow.uturn.backward")
             }
             .help("Retire every approved phrase and guidance block, restoring the built-in defaults.")
+        }
+    }
+}
+
+/// `NSSearchField` behaves reliably inside a grouped macOS `Form` and sends an update
+/// for every keystroke, including changes made with its built-in clear button.
+private struct ChannelSearchField: NSViewRepresentable {
+    @Binding var text: String
+
+    func makeNSView(context: Context) -> NSSearchField {
+        let field = NSSearchField()
+        field.placeholderString = "Filter channels"
+        field.stringValue = text
+        field.sendsSearchStringImmediately = true
+        field.delegate = context.coordinator
+        field.target = context.coordinator
+        field.action = #selector(Coordinator.searchFieldChanged(_:))
+        return field
+    }
+
+    func updateNSView(_ field: NSSearchField, context: Context) {
+        if field.stringValue != text {
+            field.stringValue = text
+        }
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(text: $text)
+    }
+
+    final class Coordinator: NSObject, NSSearchFieldDelegate {
+        @Binding private var text: String
+
+        init(text: Binding<String>) {
+            _text = text
+        }
+
+        func controlTextDidChange(_ notification: Notification) {
+            guard let field = notification.object as? NSSearchField else { return }
+            text = field.stringValue
+        }
+
+        @objc func searchFieldChanged(_ field: NSSearchField) {
+            text = field.stringValue
+        }
+    }
+}
+
+private struct LeftAlignedPhraseField: NSViewRepresentable {
+    let placeholder: String
+    @Binding var text: String
+    var onEdit: () -> Void
+
+    func makeNSView(context: Context) -> NSTextField {
+        let field = NSTextField()
+        field.placeholderString = placeholder
+        field.stringValue = text
+        field.alignment = .left
+        field.isBezeled = true
+        field.bezelStyle = .roundedBezel
+        field.drawsBackground = true
+        field.isEditable = true
+        field.isSelectable = true
+        field.delegate = context.coordinator
+        field.cell?.wraps = false
+        field.cell?.isScrollable = true
+        return field
+    }
+
+    func updateNSView(_ field: NSTextField, context: Context) {
+        if field.placeholderString != placeholder {
+            field.placeholderString = placeholder
+        }
+        if field.stringValue != text {
+            field.stringValue = text
+        }
+        field.alignment = .left
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(text: $text, onEdit: onEdit)
+    }
+
+    final class Coordinator: NSObject, NSTextFieldDelegate {
+        @Binding private var text: String
+        private let onEdit: () -> Void
+
+        init(text: Binding<String>, onEdit: @escaping () -> Void) {
+            _text = text
+            self.onEdit = onEdit
+        }
+
+        func controlTextDidBeginEditing(_ notification: Notification) {
+            guard
+                let field = notification.object as? NSTextField,
+                field.stringValue.isEmpty,
+                let editor = field.currentEditor()
+            else { return }
+            editor.selectedRange = NSRange(location: 0, length: 0)
+        }
+
+        func controlTextDidChange(_ notification: Notification) {
+            guard let field = notification.object as? NSTextField else { return }
+            text = field.stringValue
+            onEdit()
         }
     }
 }

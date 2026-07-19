@@ -53,10 +53,21 @@ enum LLMClientFactory {
         case .codexCLI:
             let path = try resolve("codex", override: settings.cliPathOverride, locate: locate)
             return CLILLMClient(runner: runner, executable: path) { request in
-                // `codex exec "<prompt>"` runs non-interactively and prints the result.
-                // Slacker uses Codex as a text classifier/summarizer, not as a repo
-                // editor, so bypass the trusted-git-directory requirement.
-                (["exec", "--skip-git-repo-check", CLILLMClient.combinedPrompt(request)], nil)
+                // Slacker needs only model output. Loading the user's Codex config would also
+                // start their MCP servers, plugins, and notification hooks on every request.
+                // Let Codex select its account-compatible default model; API model IDs such as
+                // gpt-4o are not necessarily available through ChatGPT subscription auth.
+                ([
+                    "exec",
+                    "--ignore-user-config",
+                    "--ignore-rules",
+                    "--disable", "shell_tool",
+                    "--disable", "shell_snapshot",
+                    "--ephemeral",
+                    "--sandbox", "read-only",
+                    "--skip-git-repo-check",
+                    "-",
+                ], CLILLMClient.combinedPrompt(request))
             }
 
         case .claudeCode:
@@ -72,7 +83,8 @@ enum LLMClientFactory {
     static func defaultModel(for provider: LLMProvider) -> String {
         switch provider {
         case .anthropic, .claudeCode: return "claude-opus-4-8"
-        case .openAI, .codexCLI, .genericAPI: return "gpt-4o"
+        case .openAI, .genericAPI: return "gpt-4o"
+        case .codexCLI: return ""
         case .gemini: return "gemini-2.0-flash"
         case .ollama: return "llama3"
         }

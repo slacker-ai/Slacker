@@ -1,6 +1,11 @@
 import Foundation
 import GRDB
 
+enum SlackConnectionServiceError: Error, Equatable {
+    case invalidAppToken
+    case appTokenRejected(String)
+}
+
 /// Bridges the Slack API, Keychain, and local DB for connecting workspaces (§5).
 /// UI-free so it can be unit-tested with a stub transport + in-memory database.
 struct SlackConnectionService {
@@ -10,7 +15,13 @@ struct SlackConnectionService {
     var storeToken: (_ token: String, _ workspaceID: String) throws -> Void = {
         try KeychainStore.setToken($0, workspaceID: $1)
     }
+    var storeAppToken: (_ token: String, _ workspaceID: String) throws -> Void = {
+        try KeychainStore.setAppToken($0, workspaceID: $1)
+    }
     var deleteToken: (_ workspaceID: String) throws -> Void = { try KeychainStore.deleteToken(workspaceID: $0) }
+    var deleteAppToken: (_ workspaceID: String) throws -> Void = {
+        try KeychainStore.deleteAppToken(workspaceID: $0)
+    }
     var storeAPIKey: (String) throws -> Void = { try KeychainStore.set($0, for: .llmAPIKey) }
     var now: () -> Date = { Date() }
 
@@ -30,20 +41,36 @@ struct SlackConnectionService {
         var apiKey: String
     }
 
-    /// Validate the token (`auth.test`), store it under the workspace, and cache the user.
-    func connect(token: String) async throws -> Connection {
-        let trimmed = token.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { throw SlackClientError.api("not_authed") }
+    /// Validate both Slack credentials, store them under the workspace, and cache the
+    /// connected user. Nothing is persisted until both API validations succeed.
+    func connect(userToken: String, appToken: String) async throws -> Connection {
+        let trimmed = userToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedAppToken = appToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.hasPrefix("xoxp-") else { throw SlackClientError.api("not_authed") }
+        guard trimmedAppToken.hasPrefix("xapp-") else {
+            throw SlackConnectionServiceError.invalidAppToken
+        }
 
         let auth = try await client.authTest(token: trimmed)
         guard let userID = auth.userId, let teamID = auth.teamId, !teamID.isEmpty else {
             throw SlackClientError.decoding
         }
 
-        // Store the token under this workspace only after a successful validation.
-        try storeToken(trimmed, teamID)
-
         let apiUser = try await client.usersInfo(token: trimmed, userID: userID)
+
+        do {
+            // Acquiring a URL proves the xapp token has `connections:write`. This URL is
+            // intentionally discarded; the live client acquires a fresh one at startup.
+            _ = try await client.openSocketModeConnection(appToken: trimmedAppToken)
+        } catch SlackClientError.api(let code) {
+            throw SlackConnectionServiceError.appTokenRejected(code)
+        } catch {
+            if (error as NSError).domain == NSURLErrorDomain { throw error }
+            throw SlackConnectionServiceError.invalidAppToken
+        }
+
+        try storeToken(trimmed, teamID)
+        try storeAppToken(trimmedAppToken, teamID)
         try await database.dbWriter.write { db in
             try CachedUser(from: apiUser).save(db)
         }
@@ -125,9 +152,10 @@ struct SlackConnectionService {
         }
     }
 
-    /// Remove a workspace: delete its token + record (channels/messages/items cascade).
+    /// Remove a workspace: delete both tokens + record (channels/messages/items cascade).
     func removeWorkspace(_ workspaceID: String) throws {
         try? deleteToken(workspaceID)
+        try? deleteAppToken(workspaceID)
         _ = try database.dbWriter.write { db in
             // Channels cascade-delete their messages/items/summaries via FK.
             try Channel.filter(Column("workspaceID") == workspaceID).deleteAll(db)

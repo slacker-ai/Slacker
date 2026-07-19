@@ -4,6 +4,7 @@ import Foundation
 /// Stable string contract — used as the LLM/JSON key and the `learnedPattern.bucket`
 /// column, so do not rename cases without a migration.
 enum RuleBucket: String, Codable, CaseIterable, Sendable {
+    case dismiss
     case ask
     case blocker
     case problem
@@ -14,6 +15,7 @@ enum RuleBucket: String, Codable, CaseIterable, Sendable {
     /// Human-readable label for the Settings review UI.
     var displayName: String {
         switch self {
+        case .dismiss:  return "Dismiss"
         case .ask:      return "Directed request"
         case .blocker:  return "Blocker"
         case .problem:  return "Problem report"

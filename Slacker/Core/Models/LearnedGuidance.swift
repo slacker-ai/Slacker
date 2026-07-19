@@ -5,8 +5,7 @@ import GRDB
 /// triage labels (§7.5, self-evolution). Appended to `LLMClassifier`'s stable base
 /// prompt only when `status == .approved`. `channelID == nil` means global.
 ///
-/// Guidance is versioned: a new proposal increments `version` for its scope, and
-/// retiring the current approved block falls back to the previous approved version.
+/// Guidance is versioned on automatic append, condensation, and manual edit.
 struct LearnedGuidance: Codable, Identifiable, Equatable, FetchableRecord, PersistableRecord {
     static let databaseTableName = "learnedGuidance"
 
@@ -17,4 +16,22 @@ struct LearnedGuidance: Codable, Identifiable, Equatable, FetchableRecord, Persi
     var version: Int
     var createdAt: Date
     var decidedAt: Date?
+
+    init(
+        id: String,
+        channelID: String?,
+        text: String,
+        status: PatternStatus,
+        version: Int,
+        createdAt: Date,
+        decidedAt: Date? = nil
+    ) {
+        self.id = id
+        self.channelID = channelID
+        self.text = text
+        self.status = status
+        self.version = version
+        self.createdAt = createdAt
+        self.decidedAt = decidedAt
+    }
 }

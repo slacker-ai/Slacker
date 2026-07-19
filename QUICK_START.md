@@ -31,8 +31,8 @@ Run the `Slacker` scheme from Xcode.
 
 ## Connect Slack
 
-Slacker uses your own Slack app and a read-only user token. There is no shared
-OAuth app or Slacker-operated service.
+Slacker uses your own Slack app, a read-only user token, and an app-level Socket Mode
+token. There is no shared OAuth app or Slacker-operated service.
 
 1. Launch Slacker.
 2. Choose a Slack access variant.
@@ -40,25 +40,32 @@ OAuth app or Slacker-operated service.
 4. Open Slack's app dashboard and create a new app **from a manifest**.
 5. Install the Slack app to your workspace.
 6. Open **OAuth & Permissions** and copy **OAuth Tokens -> User OAuth Token**.
-7. Paste the `xoxp-...` token into Slacker.
-8. Choose the channels Slacker should process.
-9. Connect your AI provider.
+7. In **Basic Information -> App-Level Tokens**, generate a token with
+   `connections:write` and copy the `xapp-...` value.
+8. Paste both the `xoxp-...` and `xapp-...` tokens into Slacker.
+9. Choose the channels Slacker should process.
+10. Connect your AI provider.
 
-The Slack token is stored in Keychain. Slacker only processes selected channels.
+Both Slack tokens are stored per workspace in Keychain. Slacker only processes selected
+channels. New activity arrives over Socket Mode; HTTP catch-up runs on launch, wake,
+reconnect, and foreground activation. Closing the window leaves the menu-bar app connected;
+after a real Quit,
+the next launch resumes from durable per-channel cursors.
 
 ## Slack Access Variants
 
 | Variant | Reads | User-token scopes |
 | --- | --- | --- |
-| Public + private channels | Public and private channels you already belong to | `channels:history`, `channels:read`, `groups:history`, `groups:read`, `users:read` |
-| Public channels only | Public channels you already belong to | `channels:history`, `channels:read`, `users:read` |
+| Public + private channels | Public and private channels you already belong to | `channels:history`, `channels:read`, `groups:history`, `groups:read`, `reactions:read`, `users:read` |
+| Public channels only | Public channels you already belong to | `channels:history`, `channels:read`, `reactions:read`, `users:read` |
 
 Manifest files:
 
 - [Public + private](Slacker/Slack/Manifest/manifest-public-private.json)
 - [Public only](Slacker/Slack/Manifest/manifest-public-only.json)
 
-Both variants are read-only. Neither variant can read DMs.
+Both variants are read-only, enable Socket Mode, and exclude DMs. The separate app-level
+token needs `connections:write` only to open the WebSocket.
 
 ## Run Tests
 
@@ -92,7 +99,8 @@ changing Slack app permissions.
 Keep these constraints intact while testing or developing:
 
 - No backend, telemetry, analytics, or remote logging.
-- Slack tokens and LLM API keys stay in Keychain.
-- Network egress is limited to `slack.com` and the configured LLM endpoint.
+- Slack user/app tokens and LLM API keys stay in Keychain.
+- Network egress is limited to `slack.com`, the configured LLM endpoint, and GitHub's
+  release endpoints for signed Slacker updates.
 - Slack scopes stay read-only and exclude DMs.
 - Needs attention stays item-centric; do not add person-level dashboards.

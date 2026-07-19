@@ -20,6 +20,22 @@ final class StubLLMClient: LLMClient, @unchecked Sendable {
 }
 
 final class LLMClassifierParseTests: XCTestCase {
+    func testDefaultGlobalGuidanceCoversGenericOperationalAndActionableWork() {
+        XCTAssertTrue(LLMClassifier.defaultGlobalGuidance.contains("failing, degraded, unavailable, slow"))
+        XCTAssertTrue(LLMClassifier.defaultGlobalGuidance.contains("blocking work"))
+        XCTAssertTrue(LLMClassifier.defaultGlobalGuidance.contains("answer, action, investigation, review, approval"))
+        XCTAssertTrue(LLMClassifier.defaultGlobalGuidance.contains("explicit deadline"))
+        XCTAssertTrue(LLMClassifier.defaultGlobalGuidance.contains("Do not invent deadlines, owners, or resolution status"))
+        XCTAssertFalse(LLMClassifier.defaultGlobalGuidance.contains("including replies, timestamps"))
+    }
+
+    func testBasePromptTreatsSlackMembershipEventsAsContextOnly() {
+        XCTAssertTrue(LLMClassifier.baseSystem.contains(
+            "Slack system join/leave notifications are membership events"
+        ))
+        XCTAssertTrue(LLMClassifier.baseSystem.contains("Always classify them as contextOnly"))
+    }
+
     func testParsesStrictJSON() {
         let v = LLMClassifier.parse(#"{"class":"blocker","confidence":0.9}"#)
         XCTAssertEqual(v?.messageClass, .blocker)
@@ -74,6 +90,50 @@ final class LLMDetectionIntegrationTests: XCTestCase {
         try await svc.detectWatchedChannels()
 
         XCTAssertEqual(stub.callCount, 0, "LLM must not be called when rules are confident")
+    }
+
+    func testApprovedGuidanceCanSuppressSimilarHighConfidenceRuleHit() async throws {
+        let database = try db()
+        try insert(database, ts: "100.0", user: "U1", text: "Did anyone record todays meeting?")
+        let store = PatternStore(database: database)
+        try await store.saveActiveGuidanceDocument(
+            "Treat general questions asking whether anyone recorded a meeting as context-only."
+        )
+        let stub = StubLLMClient(response: #"{"class":"contextOnly","confidence":0.95}"#)
+        var svc = DetectionService(database: database, makeID: { "id" })
+        svc.llmClassifier = LLMClassifier(client: stub)
+        svc.patternStore = store
+
+        try await svc.detectWatchedChannels()
+
+        XCTAssertEqual(stub.callCount, 1, "approved guidance must review a surfaced built-in rule hit")
+        XCTAssertTrue(stub.lastRequest?.system.contains("questions asking whether anyone recorded a meeting") == true)
+        let itemCount = try await database.dbWriter.read { try Item.fetchCount($0) }
+        XCTAssertEqual(itemCount, 0, "the learned ignore guidance should suppress the semantically equivalent message")
+    }
+
+    func testChannelGuidanceCanPromoteRuleMissToSurfaced() async throws {
+        let database = try db()
+        try insert(
+            database,
+            ts: "100.0",
+            user: "U1",
+            text: "The infra is really slow and leading to trade being missed"
+        )
+        let store = PatternStore(database: database)
+        try await store.saveGuidanceDocument("Flag slow or down infra.", channelID: "C1")
+        let stub = StubLLMClient(response: #"{"class":"blocker","confidence":0.95}"#)
+        var svc = DetectionService(database: database, makeID: { "id" })
+        svc.llmClassifier = LLMClassifier(client: stub)
+        svc.patternStore = store
+
+        try await svc.detectWatchedChannels()
+
+        XCTAssertEqual(stub.callCount, 1, "channel guidance must evaluate a base-rules miss")
+        XCTAssertTrue(stub.lastRequest?.system.contains("Flag slow or down infra") == true)
+        let item = try await database.dbWriter.read { try Item.fetchOne($0) }
+        XCTAssertEqual(item?.type, .stale)
+        XCTAssertEqual(item?.state, .surfaced)
     }
 
     func testLLMEscalationPromotesAmbiguousToSurfaced() async throws {

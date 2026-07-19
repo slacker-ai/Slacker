@@ -21,22 +21,18 @@ final class MainViewModel {
     var surfacedCount: Int { missedFollowups.count + staleItems.count + mentions.count }
 
     @ObservationIgnored private var observationTask: Task<Void, Never>?
-    /// Triggers an immediate poll+detect cycle (wired by `AppRoot`).
-    @ObservationIgnored var onRefresh: (() async -> Void)?
-    /// Per-triage learning hook (§7.5): each triage verdict proposes a phrase/guidance
-    /// change for human approval. Wired by `AppRoot`; runs in the background so triage
-    /// stays instant.
+    /// Per-action learning hook (§7.5). Wired by `AppRoot`; runs in the background so
+    /// Resolve, Dismiss, This matters, and Ignore stay instant.
     @ObservationIgnored var onTriageLabeled: ((_ channelID: String, _ messageTS: String, _ verdict: UserVerdict, _ source: LabelSource) async -> Void)?
-    var isRefreshing = false
 
     init(database: AppDatabase, now: @escaping () -> Date = { Date() }) {
         self.database = database
         self.calibration = CalibrationService(database: database)
         self.now = now
-        self.teamID = (try? database.dbWriter.read { try AppSettings.fetchOne($0, key: 1)?.teamID }) ?? "" ?? ""
+        self.teamID = (try? database.dbWriter.read { try AppSettings.fetchOne($0, key: 1)?.teamID }) ?? ""
     }
 
-    /// Begin observing item changes; reloads rows whenever the poller writes.
+    /// Begin observing item changes; reloads rows whenever realtime sync writes.
     func start() {
         guard observationTask == nil else { return }
         let reader = database.dbWriter
@@ -52,14 +48,6 @@ final class MainViewModel {
                 // Observation ended; nothing to surface.
             }
         }
-    }
-
-    /// Run an immediate poll cycle now (the "Refresh" button).
-    func refreshNow() async {
-        guard let onRefresh, !isRefreshing else { return }
-        isRefreshing = true
-        await onRefresh()
-        isRefreshing = false
     }
 
     func reload() async {
@@ -102,8 +90,7 @@ final class MainViewModel {
             verdict: verdict, source: source,
             channelID: row.channelID, messageTS: row.item.rootMessageTS, itemID: row.item.id
         )
-        // Learn from this triage immediately (§7.5). Fire-and-forget so the click stays
-        // instant; the proposal lands as `proposed` for approval in Settings.
+        // Learn immediately (§7.5). Fire-and-forget so the click stays instant.
         if let onTriageLabeled {
             let channelID = row.channelID
             let messageTS = row.item.rootMessageTS

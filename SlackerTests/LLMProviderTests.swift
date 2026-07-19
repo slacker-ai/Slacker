@@ -112,6 +112,14 @@ final class CLILLMClientTests: XCTestCase {
         let p = CLILLMClient.combinedPrompt(LLMRequest(system: "S", user: "U"))
         XCTAssertEqual(p, "S\n\nU")
     }
+
+    func testProcessRunnerUsesAppSupportWorkingDirectory() async throws {
+        let output = try await ProcessCLIRunner().run(executable: "/bin/pwd", arguments: [], stdin: nil)
+        let pwd = output.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        XCTAssertTrue(pwd.contains("/Library/Application Support/Slacker/CLIWorkdir"), pwd)
+        XCTAssertFalse(pwd.contains("/Documents/prod/Slacker"), pwd)
+    }
 }
 
 final class BinaryLocatorTests: XCTestCase {
@@ -128,6 +136,52 @@ final class BinaryLocatorTests: XCTestCase {
 
     func testReturnsNilWhenMissing() {
         XCTAssertNil(BinaryLocator.locate("definitely-not-a-real-binary-xyz", override: nil, searchDirs: ["/bin"]))
+    }
+}
+
+@MainActor
+final class OnboardingModelCLITests: XCTestCase {
+    private func makeModel(locations: [String: String]) throws -> OnboardingModel {
+        let database = try AppDatabase.makeInMemory()
+        let client = SlackClient(
+            transport: StubTransport { _ in (jsonData("{}"), makeHTTPResponse(200)) },
+            sleep: { _ in }
+        )
+        return OnboardingModel(
+            service: SlackConnectionService(client: client, database: database),
+            locateCLI: { locations[$0] }
+        )
+    }
+
+    func testSelectingCLIProviderPopulatesDetectedPathAndRemainsEditable() throws {
+        let model = try makeModel(locations: ["codex": "/opt/homebrew/bin/codex"])
+
+        model.llmProvider = .codexCLI
+
+        XCTAssertEqual(model.cliPath, "/opt/homebrew/bin/codex")
+        model.cliPath = "/custom/bin/codex"
+        XCTAssertEqual(model.cliPath, "/custom/bin/codex")
+    }
+
+    func testSwitchingCLIProvidersRefreshesDetectedPath() throws {
+        let model = try makeModel(locations: [
+            "codex": "/opt/homebrew/bin/codex",
+            "claude": "/usr/local/bin/claude",
+        ])
+
+        model.llmProvider = .codexCLI
+        model.llmProvider = .claudeCode
+
+        XCTAssertEqual(model.cliPath, "/usr/local/bin/claude")
+    }
+
+    func testMissingCLILeavesEditablePathEmpty() throws {
+        let model = try makeModel(locations: [:])
+        model.cliPath = "/stale/path"
+
+        model.llmProvider = .codexCLI
+
+        XCTAssertEqual(model.cliPath, "")
     }
 }
 
@@ -159,17 +213,28 @@ final class LLMClientFactoryTests: XCTestCase {
         }
     }
 
-    func testCodexCLIInvokesExecWithCombinedPrompt() async throws {
+    func testCodexCLIUsesAccountDefaultModelAndCombinedPrompt() async throws {
         let runner = StubCLIRunner(output: "verdict")
         let client = try LLMClientFactory.make(
-            settings: settings(.codexCLI, cliOverride: "/usr/local/bin/codex"),
+            settings: settings(.codexCLI, model: "gpt-4o", cliOverride: "/usr/local/bin/codex"),
             apiKey: nil,
             runner: runner,
             locate: { _, override in override }  // honor the override path
         )
         _ = try await client.complete(LLMRequest(system: "S", user: "U"))
         XCTAssertEqual(runner.executable, "/usr/local/bin/codex")
-        XCTAssertEqual(runner.arguments, ["exec", "--skip-git-repo-check", "S\n\nU"])
+        XCTAssertEqual(runner.arguments, [
+            "exec",
+            "--ignore-user-config",
+            "--ignore-rules",
+            "--disable", "shell_tool",
+            "--disable", "shell_snapshot",
+            "--ephemeral",
+            "--sandbox", "read-only",
+            "--skip-git-repo-check",
+            "-",
+        ])
+        XCTAssertEqual(runner.stdin, "S\n\nU")
     }
 
     func testClaudeCodeCLIPipesPromptToStdin() async throws {

@@ -6,6 +6,7 @@ enum SecretRedaction {
     /// Patterns that look like secrets: Slack tokens and common API-key shapes.
     private static let patterns: [String] = [
         #"xox[abpse]-[A-Za-z0-9-]+"#,   // Slack tokens (xoxp/xoxb/xoxa/xoxs/xoxe)
+        #"xapp-[A-Za-z0-9-]+"#,          // Slack app-level Socket Mode tokens
         #"sk-[A-Za-z0-9_-]{8,}"#,         // OpenAI-style keys
         #"AIza[A-Za-z0-9_-]{10,}"#,       // Google API keys
         #"Bearer\s+[A-Za-z0-9._-]+"#,     // Authorization bearer values

@@ -2,12 +2,12 @@ import Foundation
 import GRDB
 
 /// Per-channel detection sensitivity (§7.5). Affects surfacing thresholds.
-enum ChannelSensitivity: String, Codable, CaseIterable {
+enum ChannelSensitivity: String, Codable, CaseIterable, Sendable {
     case low, normal, high
 }
 
 /// A Slack channel the user can choose to watch (`docs/IMPLEMENTATION.md` §4).
-struct Channel: Codable, Identifiable, Equatable, FetchableRecord, PersistableRecord {
+struct Channel: Codable, Identifiable, Equatable, FetchableRecord, PersistableRecord, Sendable {
     static let databaseTableName = "channel"
 
     /// Slack channel id (e.g. `C0123ABCD`). Globally unique across Slack.
@@ -18,7 +18,7 @@ struct Channel: Codable, Identifiable, Equatable, FetchableRecord, PersistableRe
     var isPrivate: Bool
     var isWatched: Bool
     var sensitivity: ChannelSensitivity
-    /// Newest Slack `ts` ingested for this channel; drives incremental polling (M2).
+    /// Newest Slack `ts` ingested; durable cursor for targeted HTTP reconciliation.
     var lastPolledTS: String?
     /// Newest top-level Slack `ts` evaluated by detection; prevents restart reprocessing.
     var lastDetectedTS: String?

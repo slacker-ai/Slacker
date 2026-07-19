@@ -7,13 +7,17 @@ final class SlackConnectionServiceTests: XCTestCase {
     private func makeService(
         transport: StubTransport,
         database: AppDatabase,
-        onStore: @escaping (_ token: String, _ workspaceID: String) -> Void = { _, _ in }
+        onStore: @escaping (_ token: String, _ workspaceID: String) -> Void = { _, _ in },
+        onStoreApp: @escaping (_ token: String, _ workspaceID: String) -> Void = { _, _ in }
     ) -> SlackConnectionService {
         let client = SlackClient(transport: transport, sleep: { _ in })
         return SlackConnectionService(
             client: client,
             database: database,
-            storeToken: { token, workspaceID in onStore(token, workspaceID) }
+            storeToken: { token, workspaceID in onStore(token, workspaceID) },
+            storeAppToken: { token, workspaceID in onStoreApp(token, workspaceID) },
+            deleteToken: { _ in },
+            deleteAppToken: { _ in }
         )
     }
 
@@ -25,6 +29,10 @@ final class SlackConnectionServiceTests: XCTestCase {
                 return (jsonData(#"{"ok":true,"team":"Acme","user":"daanish","team_id":"T1","user_id":"U1"}"#),
                         makeHTTPResponse(200))
             }
+            if url.contains("apps.connections.open") {
+                return (jsonData(#"{"ok":true,"url":"wss://example.slack.com/link/?ticket=one-time"}"#),
+                        makeHTTPResponse(200))
+            }
             return (jsonData(#"""
             {"ok":true,"user":{"id":"U1","name":"daanish","real_name":"Daanish H",
               "profile":{"display_name":"daanish","real_name":"Daanish H"}}}
@@ -33,16 +41,26 @@ final class SlackConnectionServiceTests: XCTestCase {
 
         var storedToken: String?
         var storedWorkspace: String?
-        let service = makeService(transport: transport, database: db) { token, ws in
-            storedToken = token; storedWorkspace = ws
-        }
+        var storedAppToken: String?
+        let service = makeService(
+            transport: transport,
+            database: db,
+            onStore: { token, ws in
+                storedToken = token; storedWorkspace = ws
+            },
+            onStoreApp: { token, _ in storedAppToken = token }
+        )
 
-        let connection = try await service.connect(token: "  xoxp-token  ")
+        let connection = try await service.connect(
+            userToken: "  xoxp-token  ",
+            appToken: "  xapp-token  "
+        )
 
         XCTAssertEqual(connection.team, "Acme")
         XCTAssertEqual(connection.teamID, "T1")
         XCTAssertEqual(storedToken, "xoxp-token", "token is trimmed before storing")
         XCTAssertEqual(storedWorkspace, "T1", "token is keyed by workspace")
+        XCTAssertEqual(storedAppToken, "xapp-token", "app token is trimmed and stored per workspace")
 
         let cached = try await db.dbWriter.read { try CachedUser.fetchOne($0, key: "U1") }
         XCTAssertEqual(cached?.displayName, "daanish")
@@ -52,15 +70,42 @@ final class SlackConnectionServiceTests: XCTestCase {
         let db = try! AppDatabase.makeInMemory()
         let transport = StubTransport { _ in (jsonData(#"{"ok":true}"#), makeHTTPResponse(200)) }
         var stored = false
-        let service = makeService(transport: transport, database: db) { _, _ in stored = true }
+        let service = makeService(
+            transport: transport,
+            database: db,
+            onStore: { _, _ in stored = true }
+        )
 
         do {
-            _ = try await service.connect(token: "   ")
+            _ = try await service.connect(userToken: "   ", appToken: "xapp-token")
             XCTFail("expected error")
         } catch {
             XCTAssertEqual(error as? SlackClientError, .api("not_authed"))
             XCTAssertFalse(stored, "must not store an empty token")
             XCTAssertEqual(transport.requestCount, 0, "must not hit the network for an empty token")
+        }
+    }
+
+    func testConnectRejectsInvalidAppTokenBeforeStoringEitherCredential() async {
+        let db = try! AppDatabase.makeInMemory()
+        let transport = StubTransport { _ in (jsonData(#"{"ok":true}"#), makeHTTPResponse(200)) }
+        var storedUser = false
+        var storedApp = false
+        let service = makeService(
+            transport: transport,
+            database: db,
+            onStore: { _, _ in storedUser = true },
+            onStoreApp: { _, _ in storedApp = true }
+        )
+
+        do {
+            _ = try await service.connect(userToken: "xoxp-token", appToken: "not-an-app-token")
+            XCTFail("expected error")
+        } catch {
+            XCTAssertEqual(error as? SlackConnectionServiceError, .invalidAppToken)
+            XCTAssertFalse(storedUser)
+            XCTAssertFalse(storedApp)
+            XCTAssertEqual(transport.requestCount, 0)
         }
     }
 
@@ -133,12 +178,15 @@ final class SlackConnectionServiceTests: XCTestCase {
             try Channel(id: "C1", workspaceID: "T1", name: "general", isPrivate: false, isWatched: true).insert(dbc)
         }
         var deletedWorkspace: String?
+        var deletedAppWorkspace: String?
         var service = makeService(transport: StubTransport { _ in (jsonData("{}"), makeHTTPResponse(200)) }, database: db)
         service.deleteToken = { deletedWorkspace = $0 }
+        service.deleteAppToken = { deletedAppWorkspace = $0 }
 
         try service.removeWorkspace("T1")
 
         XCTAssertEqual(deletedWorkspace, "T1", "the workspace token is deleted")
+        XCTAssertEqual(deletedAppWorkspace, "T1", "the workspace app token is deleted")
         let wsCount = try await db.dbWriter.read { try Workspace.fetchCount($0) }
         let chCount = try await db.dbWriter.read { try Channel.fetchCount($0) }
         XCTAssertEqual(wsCount, 0)

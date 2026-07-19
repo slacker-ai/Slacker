@@ -41,7 +41,7 @@ final class SummaryServiceTests: XCTestCase {
         try addMessage(db, ts: startOfDay + 100, text: "we shipped the release")
         let stub = StubLLMClient(response: "The team shipped the release today.")
 
-        try await service(db, stub).generateDailySummaries()
+        try await service(db, stub).generateDailySummaries(channelIDs: ["C1"])
 
         let summary = try await db.dbWriter.read { try Summary.fetchAll($0).first }
         XCTAssertEqual(summary?.text, "The team shipped the release today.")
@@ -53,7 +53,7 @@ final class SummaryServiceTests: XCTestCase {
         try addMessage(db, ts: startOfDay + 100, text: "deploy update\n```production is down\n5xx errors\n```")
         let stub = StubLLMClient(response: "The deploy had an update.")
 
-        try await service(db, stub).generateDailySummaries()
+        try await service(db, stub).generateDailySummaries(channelIDs: ["C1"])
 
         XCTAssertTrue(stub.lastRequest?.user.contains("deploy update") == true)
         XCTAssertFalse(stub.lastRequest?.user.contains("production is down") == true)
@@ -66,11 +66,29 @@ final class SummaryServiceTests: XCTestCase {
         try addMessage(db, ts: startOfDay - 10_000, text: "yesterday")
         let stub = StubLLMClient(response: "should not be called")
 
-        try await service(db, stub).generateDailySummaries()
+        try await service(db, stub).generateDailySummaries(channelIDs: ["C1"])
 
         let count = try await db.dbWriter.read { try Summary.fetchCount($0) }
         XCTAssertEqual(count, 0)
         XCTAssertEqual(stub.callCount, 0, "no LLM call when there's nothing to summarize")
+    }
+
+    func testGeneratesOnlyForExplicitlyChangedChannels() async throws {
+        let db = try makeDB()
+        try addMessage(db, ts: startOfDay + 100, text: "changed channel")
+        try await db.dbWriter.write { dbc in
+            try Channel(id: "C2", workspaceID: "T1", name: "other", isPrivate: false, isWatched: true).insert(dbc)
+            try Message(channelID: "C2", ts: String(self.startOfDay + 200), threadTS: nil,
+                        userID: "U2", text: "untouched channel", reactionsJSON: nil,
+                        ingestedAt: self.fixedNow).insert(dbc)
+        }
+        let stub = StubLLMClient(response: "summary")
+
+        try await service(db, stub).generateDailySummaries(channelIDs: ["C1"])
+
+        let summaries = try await db.dbWriter.read { try Summary.fetchAll($0) }
+        XCTAssertEqual(summaries.map(\.channelID), ["C1"])
+        XCTAssertEqual(stub.callCount, 1)
     }
 
     func testOncePerDayDoesNotRegenerate() async throws {
@@ -79,8 +97,8 @@ final class SummaryServiceTests: XCTestCase {
         let stub = StubLLMClient(response: "summary")
         let svc = service(db, stub)
 
-        try await svc.generateDailySummaries()
-        try await svc.generateDailySummaries() // second run same day
+        try await svc.generateDailySummaries(channelIDs: ["C1"])
+        try await svc.generateDailySummaries(channelIDs: ["C1"]) // second run same day
 
         XCTAssertEqual(stub.callCount, 1, "summary is generated at most once per channel per day")
     }
@@ -91,11 +109,11 @@ final class SummaryServiceTests: XCTestCase {
         let stub = StubLLMClient(response: "summary")
         let svc = service(db, stub)
 
-        try await svc.generateDailySummaries() // first generation (call 1)
+        try await svc.generateDailySummaries(channelIDs: ["C1"]) // first generation (call 1)
 
         // A message AFTER the summary was generated (generatedAt == fixedNow) → regenerate.
         try addMessage(db, ts: fixedNow.timeIntervalSince1970 + 10, text: "new activity")
-        try await svc.generateDailySummaries()
+        try await svc.generateDailySummaries(channelIDs: ["C1"])
 
         XCTAssertEqual(stub.callCount, 2, "summary refreshes when new messages arrive")
     }
@@ -107,17 +125,17 @@ final class SummaryServiceTests: XCTestCase {
         let stub = StubLLMClient(response: "summary")
         let svc = service(db, stub, now: { now }, interval: 6 * 60 * 60)
 
-        try await svc.generateDailySummaries()
+        try await svc.generateDailySummaries(channelIDs: ["C1"])
 
         now = fixedNow.addingTimeInterval(10 * 60)
         try addMessage(db, ts: now.timeIntervalSince1970 + 1, text: "new activity too soon")
-        try await svc.generateDailySummaries()
+        try await svc.generateDailySummaries(channelIDs: ["C1"])
 
         XCTAssertEqual(stub.callCount, 1, "summary should not regenerate on every refresh")
 
         now = fixedNow.addingTimeInterval(6 * 60 * 60 + 60)
         try addMessage(db, ts: now.timeIntervalSince1970 + 1, text: "new activity after interval")
-        try await svc.generateDailySummaries()
+        try await svc.generateDailySummaries(channelIDs: ["C1"])
 
         XCTAssertEqual(stub.callCount, 2, "summary regenerates once the configured interval has elapsed")
     }
@@ -126,7 +144,7 @@ final class SummaryServiceTests: XCTestCase {
         let db = try makeDB()
         try addMessage(db, ts: startOfDay + 100, text: "activity")
 
-        try await service(db, nil).generateDailySummaries()
+        try await service(db, nil).generateDailySummaries(channelIDs: ["C1"])
 
         let count = try await db.dbWriter.read { try Summary.fetchCount($0) }
         XCTAssertEqual(count, 0)

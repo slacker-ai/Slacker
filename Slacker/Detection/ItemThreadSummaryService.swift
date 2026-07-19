@@ -24,7 +24,9 @@ struct ItemThreadSummaryService {
     /// (a wrongly-closed item is an attention item the manager never sees).
     private let resolveMinConfidence = 0.80
 
-    private let system = """
+    /// Kept reusable so the evolution loop can compare a proposed resolution rule with
+    /// the exact thread-analysis contract that is already in force.
+    static let baseSystem = """
     You analyze a Slack thread for a busy manager. Respond with ONLY a JSON object, no \
     prose, no code fences:
     {"summary":"1-2 sentence recap of what's asked/blocked and the current state",
@@ -41,11 +43,31 @@ struct ItemThreadSummaryService {
     only when the thread is still waiting, investigating, assigned with no outcome, or unclear.
     """
 
-    func analyzeOpenThreads() async throws {
-        guard let llm else { return }
+    static func effectiveSystemPrompt(guidance: String) -> String {
+        let trimmed = guidance.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return baseSystem }
+        return """
+        \(baseSystem)
 
-        let items = try await database.dbWriter.read { db in
-            try Item.filter(ItemThreadSummaryService.openStates.map(\.rawValue).contains(Column("state"))).fetchAll(db)
+        Approved workspace-specific guidance:
+        \(trimmed)
+        """
+    }
+
+    func analyzeOpenThreads(rootsByChannel: [String: Set<String>]) async throws {
+        guard let llm, !rootsByChannel.isEmpty else { return }
+
+        var items: [Item] = []
+        for channelID in rootsByChannel.keys.sorted() {
+            guard let roots = rootsByChannel[channelID], !roots.isEmpty else { continue }
+            let channelItems = try await database.dbWriter.read { db in
+                try Item
+                    .filter(Column("channelID") == channelID)
+                    .filter(roots.contains(Column("rootMessageTS")))
+                    .filter(ItemThreadSummaryService.openStates.map(\.rawValue).contains(Column("state")))
+                    .fetchAll(db)
+            }
+            items.append(contentsOf: channelItems)
         }
 
         for item in items {
@@ -117,16 +139,8 @@ struct ItemThreadSummaryService {
     }
 
     private func systemPrompt(forChannelID channelID: String) async throws -> String {
-        guard let guidance = try await patternStore?.activeGuidance(forChannelID: channelID),
-              !guidance.isEmpty else {
-            return system
-        }
-        return """
-        \(system)
-
-        Approved workspace-specific guidance:
-        \(guidance)
-        """
+        let guidance = try await patternStore?.activeGuidance(forChannelID: channelID) ?? ""
+        return Self.effectiveSystemPrompt(guidance: guidance)
     }
 
     private func latestMessageIsActionableOpen(root: Message, replies: [Message]) -> Bool {

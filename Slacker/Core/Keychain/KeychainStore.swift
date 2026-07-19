@@ -3,7 +3,7 @@ import Security
 
 /// Thin wrapper over the macOS Keychain (generic-password items).
 ///
-/// This is the ONLY place secrets live (Slack `xoxp-` tokens + LLM API key).
+/// This is the ONLY place secrets live (Slack `xoxp-`/`xapp-` tokens + LLM API key).
 /// Never UserDefaults, plist, SQLite, or logs (`docs/IMPLEMENTATION.md` §3, §5.4).
 enum KeychainStore {
     /// Stable keys for singleton secrets. (Per-workspace Slack tokens use a computed account.)
@@ -30,6 +30,7 @@ enum KeychainStore {
     // MARK: - Per-workspace Slack tokens
 
     private static func tokenAccount(_ workspaceID: String) -> String { "slack.user.token.\(workspaceID)" }
+    private static func appTokenAccount(_ workspaceID: String) -> String { "slack.app.token.\(workspaceID)" }
 
     static func setToken(_ token: String, workspaceID: String) throws {
         try setItem(token, account: tokenAccount(workspaceID))
@@ -43,7 +44,25 @@ enum KeychainStore {
     }
 
     static func deleteToken(workspaceID: String) throws {
+        let hadWorkspaceToken = try getItem(account: tokenAccount(workspaceID)) != nil
         try deleteItem(account: tokenAccount(workspaceID))
+        // A pre-multi-workspace install may still be reading the singleton fallback.
+        // Remove it only when this workspace had no dedicated item of its own.
+        if !hadWorkspaceToken {
+            try deleteItem(account: Key.slackUserToken.rawValue)
+        }
+    }
+
+    static func setAppToken(_ token: String, workspaceID: String) throws {
+        try setItem(token, account: appTokenAccount(workspaceID))
+    }
+
+    static func getAppToken(workspaceID: String) throws -> String? {
+        try getItem(account: appTokenAccount(workspaceID))
+    }
+
+    static func deleteAppToken(workspaceID: String) throws {
+        try deleteItem(account: appTokenAccount(workspaceID))
     }
 
     // MARK: - Generic-password primitives (account-keyed)

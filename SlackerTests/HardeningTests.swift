@@ -1,10 +1,18 @@
 import XCTest
+import AppKit
 @testable import Slacker
 
 final class SecretRedactionTests: XCTestCase {
     func testRedactsSlackToken() {
         let out = SecretRedaction.redact("token is xoxp-123-abc-DEF456 ok")
         XCTAssertFalse(out.contains("xoxp-123-abc-DEF456"))
+        XCTAssertTrue(out.contains("‹redacted›"))
+    }
+
+    func testRedactsSlackAppToken() {
+        let token = "xapp-1-A123-secretvalue"
+        let out = SecretRedaction.redact("Socket token is \(token)")
+        XCTAssertFalse(out.contains(token))
         XCTAssertTrue(out.contains("‹redacted›"))
     }
 
@@ -23,9 +31,9 @@ final class SecretRedactionTests: XCTestCase {
     }
 }
 
-/// No-egress guard (§3): all Slack traffic must target slack.com and nothing else.
-/// Every network call in the app goes through `HTTPTransport`, so recording the hosts
-/// a full poll cycle hits proves there is no stray egress.
+/// No-egress guard (§3): Slack Web API traffic must target slack.com and nothing else.
+/// Socket Mode additionally validates that Slack's temporary URL uses `wss` on a
+/// `slack.com` host before constructing the native WebSocket task.
 final class NoEgressTests: XCTestCase {
     func testSlackClientOnlyContactsSlackDotCom() async throws {
         let transport = StubTransport { request in
@@ -84,7 +92,14 @@ final class NoEgressTests: XCTestCase {
     }
 }
 
+final class AppLifecycleTests: XCTestCase {
+    func testClosingLastWindowKeepsMenuBarProcessRunning() {
+        let delegate = SlackerAppDelegate()
+        XCTAssertFalse(delegate.applicationShouldTerminateAfterLastWindowClosed(NSApplication.shared))
+    }
+}
+
 // NOTE: AppRoot is intentionally not unit-tested directly — constructing it opens the
-// real on-disk DB and starts the live poller (real network/Keychain), which is slow and
+// real on-disk DB and starts live Socket Mode (real network/Keychain), which is slow and
 // flaky in tests. The recoverable-DB fallback is verified manually. If this needs a test,
-// first refactor AppRoot to inject its database + poller.
+// first refactor AppRoot to inject its database + sync coordinator.

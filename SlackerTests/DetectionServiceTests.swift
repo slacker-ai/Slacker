@@ -31,10 +31,28 @@ final class DetectionServiceTests: XCTestCase {
         }
     }
 
-    private func insert(_ db: AppDatabase, ts: String, user: String, text: String, threadTS: String? = nil) throws {
+    private func insert(
+        _ db: AppDatabase,
+        ts: String,
+        user: String,
+        text: String,
+        threadTS: String? = nil,
+        reactionsJSON: String? = nil,
+        firstObservedAt: Date? = nil,
+        contentEditedAt: Date? = nil,
+        openReactionObservedAt: Date? = nil,
+        resolvedReactionObservedAt: Date? = nil,
+        resolvedReactionRemovedAt: Date? = nil
+    ) throws {
         try db.dbWriter.write { dbc in
             try Message(channelID: "C1", ts: ts, threadTS: threadTS, userID: user,
-                        text: text, reactionsJSON: nil, ingestedAt: fixedNow).insert(dbc)
+                        text: text, reactionsJSON: reactionsJSON,
+                        firstObservedAt: firstObservedAt,
+                        contentEditedAt: contentEditedAt,
+                        openReactionObservedAt: openReactionObservedAt,
+                        resolvedReactionObservedAt: resolvedReactionObservedAt,
+                        resolvedReactionRemovedAt: resolvedReactionRemovedAt,
+                        ingestedAt: fixedNow).insert(dbc)
         }
     }
 
@@ -47,7 +65,7 @@ final class DetectionServiceTests: XCTestCase {
         lastEvaluatedAt: Date? = nil,
         resolutionReason: ResolutionReason? = nil
     ) async throws {
-        try await db.dbWriter.write { dbc in
+        _ = try await db.dbWriter.write { dbc in
             try Item(id: id, channelID: "C1", rootMessageTS: root, threadTS: root,
                      type: type, state: state, confidence: 0.9,
                      createdAt: self.fixedNow, lastEvaluatedAt: lastEvaluatedAt ?? self.fixedNow,
@@ -77,6 +95,85 @@ final class DetectionServiceTests: XCTestCase {
 
         let count = try await db.dbWriter.read { try Item.fetchCount($0) }
         XCTAssertEqual(count, 0)
+    }
+
+    func testLearnedDismissPhraseDismissesActiveItemWithoutCreatingNewItems() async throws {
+        let db = try AppDatabase.makeInMemory()
+        try seedChannel(db)
+        try insert(
+            db,
+            ts: "100.0",
+            user: "U1",
+            text: "Automated status report: production is down, can someone investigate?"
+        )
+        try insert(
+            db,
+            ts: "200.0",
+            user: "U1",
+            text: "Automated status report: build failed, can someone investigate?"
+        )
+        try await insertItem(db, root: "100.0", type: .stale, state: .surfaced)
+
+        let store = PatternStore(database: db)
+        try await store.saveManualPattern(
+            channelID: nil,
+            bucket: .dismiss,
+            phrase: "automated status report"
+        )
+        var service = makeService(db)
+        service.patternStore = store
+
+        try await service.detectWatchedChannels()
+
+        let items = try await db.dbWriter.read { try Item.fetchAll($0) }
+        XCTAssertEqual(items.count, 1, "suppression must not create hidden tombstone items")
+        XCTAssertEqual(items.first?.rootMessageTS, "100.0")
+        XCTAssertEqual(items.first?.state, .dismissed)
+        let labelCount = try await db.dbWriter.read { try TriageLabel.fetchCount($0) }
+        XCTAssertEqual(labelCount, 0, "automatic keyword suppression is not a user triage label")
+
+        try insert(
+            db,
+            ts: "201.0",
+            user: "U2",
+            text: "the outage is back",
+            threadTS: "100.0",
+            firstObservedAt: fixedNow.addingTimeInterval(1)
+        )
+        try await service.detectChangedRoots(["C1": ["100.0"]])
+
+        let stateAfterReply = try await db.dbWriter.read {
+            try Item.fetchOne($0, key: "item-100.0")?.state
+        }
+        XCTAssertEqual(stateAfterReply, .dismissed, "new activity must not bypass an active dismiss phrase")
+    }
+
+    func testAlreadyResolvedThreadDoesNotCreateTransientItem() async throws {
+        let db = try AppDatabase.makeInMemory()
+        try seedChannel(db)
+        try insert(db, ts: "100.0", user: "U1", text: "staging config", threadTS: "100.0")
+        try insert(db, ts: "101.0", user: "U1", text: "following up on this", threadTS: "100.0")
+        try insert(db, ts: "102.0", user: "U2", text: "fixed", threadTS: "100.0")
+
+        try await makeService(db).detectWatchedChannels()
+
+        let count = try await db.dbWriter.read { try Item.fetchCount($0) }
+        XCTAssertEqual(count, 0, "detection must not briefly surface a thread that is already resolved")
+    }
+
+    func testAlreadyResolvedActiveThreadIsClosedDuringDetection() async throws {
+        let db = try AppDatabase.makeInMemory()
+        try seedChannel(db)
+        try insert(db, ts: "100.0", user: "U1", text: "staging config", threadTS: "100.0")
+        try insert(db, ts: "101.0", user: "U1", text: "following up on this", threadTS: "100.0")
+        try insert(db, ts: "102.0", user: "U2", text: "fixed", threadTS: "100.0")
+        try await insertItem(db, root: "100.0", type: .stale, state: .surfaced)
+
+        try await makeService(db).detectWatchedChannels()
+
+        let item = try await db.dbWriter.read { try Item.fetchOne($0, key: "item-100.0") }
+        XCTAssertEqual(item?.state, .resolved)
+        XCTAssertEqual(item?.resolutionReason, .stated)
     }
 
     func testNoUncertainItemIsEverSurfaced() async throws {
@@ -131,6 +228,62 @@ final class DetectionServiceTests: XCTestCase {
         XCTAssertEqual(finalCursor, "101.0")
     }
 
+    func testForcedEditedRootIsDetectedEvenBeforeCursor() async throws {
+        let db = try AppDatabase.makeInMemory()
+        try seedChannel(db, lastDetectedTS: "500.0")
+        try insert(db, ts: "100.0", user: "U1", text: "<@U2> can you confirm the rollout?")
+
+        try await makeService(db).detectWatchedChannels(
+            forcedRootTSByChannel: ["C1": ["100.0"]]
+        )
+
+        let item = try await db.dbWriter.read { try Item.fetchOne($0) }
+        XCTAssertEqual(item?.rootMessageTS, "100.0")
+        XCTAssertEqual(item?.state, .surfaced)
+        let cursor = try await db.dbWriter.read { try Channel.fetchOne($0, key: "C1")?.lastDetectedTS }
+        XCTAssertEqual(cursor, "500.0", "forcing an old edit must not move the durable cursor backward")
+    }
+
+    func testSocketDetectionEvaluatesOnlyNamedRoots() async throws {
+        let db = try AppDatabase.makeInMemory()
+        try seedChannel(db, lastDetectedTS: "500.0")
+        try insert(db, ts: "100.0", user: "U1", text: "<@U2> can you confirm the rollout?")
+        try insert(db, ts: "200.0", user: "U1", text: "<@U2> can you review the release notes?")
+
+        try await makeService(db).detectChangedRoots(["C1": ["100.0"]])
+
+        let items = try await db.dbWriter.read { try Item.fetchAll($0) }
+        XCTAssertEqual(items.map(\.rootMessageTS), ["100.0"])
+        let cursor = try await db.dbWriter.read { try Channel.fetchOne($0, key: "C1")?.lastDetectedTS }
+        XCTAssertEqual(cursor, "500.0")
+    }
+
+    func testTargetedReplyRecheckDoesNotRemoveExistingItem() async throws {
+        let db = try AppDatabase.makeInMemory()
+        try seedChannel(db, lastDetectedTS: "500.0")
+        try insert(db, ts: "100.0", user: "U1", text: "deploy finished, all green")
+        try await insertItem(db, root: "100.0", type: .stale, state: .surfaced)
+
+        try await makeService(db).detectChangedRoots(["C1": ["100.0"]])
+
+        let item = try await db.dbWriter.read { try Item.fetchOne($0, key: "item-100.0") }
+        XCTAssertEqual(item?.state, .surfaced, "ordinary thread activity must not act like a source-message edit")
+    }
+
+    func testForcedEditRemovesActiveItemWhenRootIsNoLongerActionable() async throws {
+        let db = try AppDatabase.makeInMemory()
+        try seedChannel(db, lastDetectedTS: "500.0")
+        try insert(db, ts: "100.0", user: "U1", text: "deploy finished, all green")
+        try await insertItem(db, root: "100.0", type: .stale, state: .surfaced)
+
+        try await makeService(db).detectWatchedChannels(
+            forcedRootTSByChannel: ["C1": ["100.0"]]
+        )
+
+        let count = try await db.dbWriter.read { try Item.fetchCount($0) }
+        XCTAssertEqual(count, 0)
+    }
+
     func testFollowUpReplyRetagsExistingOpenItemAsStale() async throws {
         let db = try AppDatabase.makeInMemory()
         try seedChannel(db)
@@ -159,6 +312,38 @@ final class DetectionServiceTests: XCTestCase {
         XCTAssertEqual(item?.type, .mention)
         XCTAssertEqual(item?.state, .surfaced)
         XCTAssertEqual(item?.confidence, 1.0)
+    }
+
+    func testLegacyMembershipMentionAndItsDismissalLabelAreRemoved() async throws {
+        let db = try AppDatabase.makeInMemory()
+        try seedWorkspaceAndChannel(db)
+        try insert(
+            db,
+            ts: "100.0",
+            user: "U_SELF",
+            text: "<@U_SELF|Daanish> has joined the channel"
+        )
+        try await insertItem(db, state: .dismissed)
+        try await db.dbWriter.write { database in
+            try TriageLabel(
+                id: "label-1",
+                itemID: "item-100.0",
+                messageTS: "100.0",
+                channelID: "C1",
+                userVerdict: .ignore,
+                source: .dismissal,
+                createdAt: self.fixedNow
+            ).insert(database)
+        }
+
+        try await makeService(db).detectWatchedChannels()
+
+        let messageCount = try await db.dbWriter.read { try Message.fetchCount($0) }
+        let itemCount = try await db.dbWriter.read { try Item.fetchCount($0) }
+        let labelCount = try await db.dbWriter.read { try TriageLabel.fetchCount($0) }
+        XCTAssertEqual(messageCount, 0)
+        XCTAssertEqual(itemCount, 0)
+        XCTAssertEqual(labelCount, 0, "Slack system notices must not influence calibration")
     }
 
     func testMentionedReplyCreatesMentionItemForOldThreadRoot() async throws {
@@ -280,7 +465,7 @@ final class DetectionServiceTests: XCTestCase {
 
         try await svc.detectWatchedChannels()
         // User resolves it.
-        try await db.dbWriter.write { dbc in
+        _ = try await db.dbWriter.write { dbc in
             try Item.filter(Column("rootMessageTS") == "100.0")
                 .updateAll(dbc, Column("state").set(to: ItemState.resolved.rawValue))
         }
@@ -373,6 +558,164 @@ final class DetectionServiceTests: XCTestCase {
         XCTAssertEqual(item?.state, .resolved, "reopen only considers replies after the resolution time")
     }
 
+    func testRegexReopensResolvedItemFromEditedOldReply() async throws {
+        let db = try AppDatabase.makeInMemory()
+        try seedChannel(db)
+        try insert(db, ts: "100.0", user: "U1", text: "rollout status", threadTS: "100.0")
+        try insert(
+            db,
+            ts: "101.0",
+            user: "U2",
+            text: "this is still failing",
+            threadTS: "100.0",
+            firstObservedAt: fixedNow.addingTimeInterval(-60),
+            contentEditedAt: fixedNow.addingTimeInterval(1)
+        )
+        try await insertItem(
+            db,
+            type: .stale,
+            state: .resolved,
+            resolutionReason: .stated
+        )
+
+        try await makeService(db).detectChangedRoots(["C1": ["100.0"]])
+
+        let item = try await db.dbWriter.read { try Item.fetchOne($0, key: "item-100.0") }
+        XCTAssertEqual(item?.state, .surfaced)
+        XCTAssertEqual(item?.type, .stale)
+        XCTAssertNil(item?.resolutionReason)
+    }
+
+    func testNewActionableReplyReopensDismissedItem() async throws {
+        let db = try AppDatabase.makeInMemory()
+        try seedChannel(db)
+        try insert(db, ts: "100.0", user: "U1", text: "rollout status", threadTS: "100.0")
+        try insert(
+            db,
+            ts: "101.0",
+            user: "U2",
+            text: "the outage is back",
+            threadTS: "100.0",
+            // Local observation ordering remains correct even if Slack/server time and
+            // the Mac's clock differ substantially.
+            firstObservedAt: fixedNow.addingTimeInterval(1)
+        )
+        try await insertItem(db, type: .stale, state: .dismissed)
+
+        try await makeService(db).detectChangedRoots(["C1": ["100.0"]])
+
+        let item = try await db.dbWriter.read { try Item.fetchOne($0, key: "item-100.0") }
+        XCTAssertEqual(item?.state, .surfaced)
+        XCTAssertEqual(item?.type, .stale)
+    }
+
+    func testNewOpenReactionReopensResolvedItem() async throws {
+        let db = try AppDatabase.makeInMemory()
+        try seedChannel(db)
+        try insert(
+            db,
+            ts: "100.0",
+            user: "U1",
+            text: "rollout status",
+            threadTS: "100.0",
+            reactionsJSON: #"[{"name":"eyes","count":1}]"#,
+            openReactionObservedAt: fixedNow.addingTimeInterval(1)
+        )
+        try await insertItem(
+            db,
+            type: .stale,
+            state: .resolved,
+            resolutionReason: .stated
+        )
+
+        try await makeService(db).detectChangedRoots(["C1": ["100.0"]])
+
+        let item = try await db.dbWriter.read { try Item.fetchOne($0, key: "item-100.0") }
+        XCTAssertEqual(item?.state, .surfaced)
+        XCTAssertEqual(item?.confidence, 1.0)
+    }
+
+    func testNewOpenEmojiReplyReopensResolvedItem() async throws {
+        let db = try AppDatabase.makeInMemory()
+        try seedChannel(db)
+        try insert(db, ts: "100.0", user: "U1", text: "rollout status", threadTS: "100.0")
+        try insert(
+            db,
+            ts: "101.0",
+            user: "U2",
+            text: "👀",
+            threadTS: "100.0",
+            firstObservedAt: fixedNow.addingTimeInterval(1)
+        )
+        try await insertItem(
+            db,
+            type: .stale,
+            state: .resolved,
+            resolutionReason: .stated
+        )
+
+        try await makeService(db).detectChangedRoots(["C1": ["100.0"]])
+
+        let item = try await db.dbWriter.read { try Item.fetchOne($0, key: "item-100.0") }
+        XCTAssertEqual(item?.state, .surfaced)
+        XCTAssertEqual(item?.confidence, 1.0)
+    }
+
+    func testRemovingFinalCheckReactionReopensReactionResolvedItem() async throws {
+        let db = try AppDatabase.makeInMemory()
+        try seedChannel(db)
+        try insert(
+            db,
+            ts: "100.0",
+            user: "U1",
+            text: "rollout status",
+            threadTS: "100.0",
+            resolvedReactionRemovedAt: fixedNow.addingTimeInterval(1)
+        )
+        try await insertItem(
+            db,
+            type: .stale,
+            state: .resolved,
+            resolutionReason: .reacted
+        )
+
+        try await makeService(db).detectChangedRoots(["C1": ["100.0"]])
+
+        let item = try await db.dbWriter.read { try Item.fetchOne($0, key: "item-100.0") }
+        XCTAssertEqual(item?.state, .surfaced)
+        XCTAssertNil(item?.resolutionReason)
+    }
+
+    func testNewCheckClosesReopenedThreadEvenWhenRootClassificationDropsBelowReview() async throws {
+        let db = try AppDatabase.makeInMemory()
+        try seedChannel(db)
+        try insert(
+            db,
+            ts: "100.0",
+            user: "U1",
+            text: "blocked on the rollout",
+            threadTS: "100.0",
+            reactionsJSON: #"[{"name":"eyes","count":1},{"name":"white_check_mark","count":1}]"#,
+            openReactionObservedAt: fixedNow.addingTimeInterval(-10),
+            resolvedReactionObservedAt: fixedNow.addingTimeInterval(1)
+        )
+        try insert(
+            db,
+            ts: "101.0",
+            user: "U2",
+            text: "this is still failing, can someone look?",
+            threadTS: "100.0",
+            firstObservedAt: fixedNow.addingTimeInterval(-5)
+        )
+        try await insertItem(db, type: .stale, state: .surfaced)
+
+        try await makeService(db).detectChangedRoots(["C1": ["100.0"]])
+
+        let item = try await db.dbWriter.read { try Item.fetchOne($0, key: "item-100.0") }
+        XCTAssertEqual(item?.state, .resolved)
+        XCTAssertEqual(item?.resolutionReason, .reacted)
+    }
+
     func testPromotedReviewItemStaysSurfaced() async throws {
         // A bare question lands in review; the user promotes it ("This matters"). A later
         // detection cycle must NOT demote it back to review.
@@ -388,7 +731,7 @@ final class DetectionServiceTests: XCTestCase {
         XCTAssertEqual(firstState, .review)
 
         // Simulate the user promoting it to surfaced.
-        try await db.dbWriter.write { dbc in
+        _ = try await db.dbWriter.write { dbc in
             try Item.filter(Column("rootMessageTS") == "100.0")
                 .updateAll(dbc, Column("state").set(to: ItemState.surfaced.rawValue))
         }

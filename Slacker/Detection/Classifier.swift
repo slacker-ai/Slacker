@@ -19,6 +19,14 @@ struct Classification: Equatable {
     let type: ItemType?
     let state: ItemState?
     let confidence: Double
+    let shouldDismiss: Bool
+
+    init(type: ItemType?, state: ItemState?, confidence: Double, shouldDismiss: Bool = false) {
+        self.type = type
+        self.state = state
+        self.confidence = confidence
+        self.shouldDismiss = shouldDismiss
+    }
 
     static let none = Classification(type: nil, state: nil, confidence: 0)
 }
@@ -54,11 +62,15 @@ struct Classifier {
         rootUserID: String?,
         sensitivity: ChannelSensitivity
     ) -> Classification {
+        let rootVerdict = ruleEngine.classify(text: rootText)
+        if rootVerdict.shouldDismiss {
+            return route(rootVerdict, replies: [], rootUserID: rootUserID, sensitivity: sensitivity)
+        }
         if hasStaleFollowUpReply(replies) {
             let verdict = RuleVerdict(messageClass: .blocker, confidence: staleFollowUpConfidence)
             return route(verdict, replies: [], rootUserID: rootUserID, sensitivity: sensitivity)
         }
-        return route(ruleEngine.classify(text: rootText), replies: replies, rootUserID: rootUserID, sensitivity: sensitivity)
+        return route(rootVerdict, replies: replies, rootUserID: rootUserID, sensitivity: sensitivity)
     }
 
     /// Route a verdict (from rules OR the LLM) into an item state by confidence,
@@ -69,6 +81,9 @@ struct Classifier {
         rootUserID: String?,
         sensitivity: ChannelSensitivity
     ) -> Classification {
+        if verdict.shouldDismiss {
+            return Classification(type: nil, state: nil, confidence: verdict.confidence, shouldDismiss: true)
+        }
         guard let type = signalType(for: verdict.messageClass) else {
             return .none
         }

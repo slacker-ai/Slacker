@@ -13,6 +13,15 @@ enum MessageClass: String, Equatable {
 struct RuleVerdict: Equatable {
     let messageClass: MessageClass
     let confidence: Double
+    /// A user-configured suppression phrase is authoritative. It must not be promoted
+    /// again by stale-follow-up rules or the LLM guidance pass.
+    let shouldDismiss: Bool
+
+    init(messageClass: MessageClass, confidence: Double, shouldDismiss: Bool = false) {
+        self.messageClass = messageClass
+        self.confidence = confidence
+        self.shouldDismiss = shouldDismiss
+    }
 
     static let contextOnly = RuleVerdict(messageClass: .contextOnly, confidence: 0.0)
 }
@@ -119,15 +128,18 @@ struct RuleEngine {
 
     /// A learned phrase is admissible only if it's multi-word and long enough. Keeps the
     /// learned overlay from broadening the rules into noise (§6b precision invariant).
-    static func isAdmissibleLearnedPhrase(_ raw: String) -> Bool {
+    static func isAdmissibleLearnedPhrase(_ raw: String, for bucket: RuleBucket? = nil) -> Bool {
         let phrase = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard phrase.count >= minLearnedPhraseLength, phrase.contains(" ") else { return false }
+        // A dismissal intentionally overrides a built-in positive phrase.
+        if bucket == .dismiss { return true }
         return !allBasePhrases.contains(phrase)
     }
 
     // MARK: - Per-instance banks (base + learned)
 
     private let askPhrases: [String]
+    private let dismissPhrases: [String]
     private let blockerPhrases: [String]
     private let problemPhrases: [String]
     private let helpPhrases: [String]
@@ -138,18 +150,23 @@ struct RuleEngine {
 
     init(learned: LearnedPhraseBank = .empty) {
         self.learned = learned
-        self.askPhrases = Self.merged(Self.baseAsk, learned.phrases(for: .ask))
-        self.blockerPhrases = Self.merged(Self.baseBlocker, learned.phrases(for: .blocker))
-        self.problemPhrases = Self.merged(Self.baseProblem, learned.phrases(for: .problem))
-        self.helpPhrases = Self.merged(Self.baseHelp, learned.phrases(for: .help))
-        self.decisionPhrases = Self.merged(Self.baseDecision, learned.phrases(for: .decision))
-        self.deadlinePhrases = Self.merged(Self.baseDeadline, learned.phrases(for: .deadline))
+        self.dismissPhrases = Self.merged([], learned.phrases(for: .dismiss), bucket: .dismiss)
+        self.askPhrases = Self.merged(Self.baseAsk, learned.phrases(for: .ask), bucket: .ask)
+        self.blockerPhrases = Self.merged(Self.baseBlocker, learned.phrases(for: .blocker), bucket: .blocker)
+        self.problemPhrases = Self.merged(Self.baseProblem, learned.phrases(for: .problem), bucket: .problem)
+        self.helpPhrases = Self.merged(Self.baseHelp, learned.phrases(for: .help), bucket: .help)
+        self.decisionPhrases = Self.merged(Self.baseDecision, learned.phrases(for: .decision), bucket: .decision)
+        self.deadlinePhrases = Self.merged(Self.baseDeadline, learned.phrases(for: .deadline), bucket: .deadline)
     }
 
     /// Base + admissible learned phrases (lowercased), de-duplicated.
-    private static func merged(_ base: [String], _ learnedPhrases: [String]) -> [String] {
+    private static func merged(
+        _ base: [String],
+        _ learnedPhrases: [String],
+        bucket: RuleBucket
+    ) -> [String] {
         let admissible = learnedPhrases
-            .filter(isAdmissibleLearnedPhrase)
+            .filter { isAdmissibleLearnedPhrase($0, for: bucket) }
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
         // Base first (preserves existing precedence); learned appended, no duplicates.
         var seen = Set(base)
@@ -161,6 +178,12 @@ struct RuleEngine {
         let text = rawText.lowercased()
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return .contextOnly }
+
+        // Explicit user suppression wins over every positive keyword. Treat it as a
+        // hard context-only verdict so downstream LLM classification cannot revive it.
+        if contains(text, dismissPhrases) {
+            return RuleVerdict(messageClass: .contextOnly, confidence: 1.0, shouldDismiss: true)
+        }
 
         let isDirected = rawText.contains("<@") || rawText.contains("@here") || rawText.contains("@channel")
         let isQuestion = trimmed.hasSuffix("?") || contains(text, askPhrases)
@@ -182,7 +205,7 @@ struct RuleEngine {
         }
 
         // Problem reports ("X is failing", "trying to … but …") are implicit blockers.
-        if contains(text, problemPhrases) || isStruggleReport(text) {
+        if contains(text, problemPhrases) || isStruggleReport(text) || isImpactPreventionReport(text) {
             return RuleVerdict(messageClass: .blocker, confidence: 0.8)
         }
 
@@ -223,5 +246,110 @@ struct RuleEngine {
         guard text.contains("trying to") || text.contains("attempting to") else { return false }
         return text.contains("but ") || text.contains("fail") || text.contains("error")
             || text.contains("can't") || text.contains("cannot") || text.contains("won't")
+    }
+
+    /// Matches an active problem that prevents an outcome, while avoiding positive text
+    /// such as "this guard prevents an issue from occurring" (problem must come first).
+    private func isImpactPreventionReport(_ text: String) -> Bool {
+        let words = text.split { !$0.isLetter && !$0.isNumber }.map(String.init)
+        let problemWords: Set<String> = [
+            "issue", "issues", "problem", "problems", "failure", "failures",
+            "error", "errors", "outage", "outages",
+        ]
+        let preventionWords: Set<String> = ["prevent", "prevents", "prevented", "preventing"]
+
+        guard let problemIndex = words.firstIndex(where: problemWords.contains),
+              let preventionIndex = words.firstIndex(where: preventionWords.contains),
+              problemIndex < preventionIndex,
+              words[(preventionIndex + 1)...].contains("from") else {
+            return false
+        }
+        return true
+    }
+}
+
+/// Narrow, compiled regular expressions for activity that explicitly reopens a closed
+/// loop. These run only against new or newly-edited terminal-thread activity; the normal
+/// detector remains phrase-based so regex cannot broaden initial detection globally.
+struct ReopenSignalDetector {
+    private struct SignalPattern {
+        let regex: NSRegularExpression
+        let messageClass: MessageClass
+        let confidence: Double
+
+        init(_ pattern: String, _ messageClass: MessageClass, _ confidence: Double) {
+            // Every pattern below is a shipped constant covered by tests. Failing fast is
+            // preferable to silently disabling reopen behavior after a bad code change.
+            self.regex = try! NSRegularExpression(
+                pattern: pattern,
+                options: [.caseInsensitive]
+            )
+            self.messageClass = messageClass
+            self.confidence = confidence
+        }
+    }
+
+    private static let patterns: [SignalPattern] = [
+        SignalPattern(
+            #"\b(?:still|again|currently|now)\s+(?:(?:is|are)\s+|keeps?\s+)?(?:fail(?:ing|ed)?|broken|blocked|stuck|down|degraded|timing\s+out)\b"#,
+            .blocker,
+            0.9
+        ),
+        SignalPattern(
+            #"\b(?:fail(?:ing|ed|ure)?|broken|blocked|stuck|down|degraded|timeout|outage|incident)\s+(?:(?:is|has)\s+)?(?:again|still|returned|back)\b"#,
+            .blocker,
+            0.9
+        ),
+        SignalPattern(
+            #"\b(?:reopen(?:ed|ing)?|regress(?:ed|ion)?|recurr(?:ed|ing|ence)|broke\s+again)\b"#,
+            .blocker,
+            0.9
+        ),
+        SignalPattern(
+            #"\b(?:not|isn['’]?t|wasn['’]?t|never)\s+(?:actually\s+)?(?:fixed|resolved|done|working)\b"#,
+            .blocker,
+            0.9
+        ),
+        SignalPattern(
+            #"\b(?:affecting|impacting)\s+(?:prod(?:uction)?|customers?|users?)\b"#,
+            .blocker,
+            0.9
+        ),
+        SignalPattern(
+            #"\b(?:can|could|would)\s+(?:someone|anyone|you|we)\b"#,
+            .openQuestion,
+            0.85
+        ),
+        SignalPattern(
+            #"\b(?:please\s+)?(?:take\s+a\s+look|look\s+into|investigate|check\s+this|help\s+with|review\s+this)\b"#,
+            .openQuestion,
+            0.85
+        ),
+        SignalPattern(
+            #"\b(?:any\s+updates?|following\s+up|bump(?:ing)?\s+this|circling\s+back)\b"#,
+            .openQuestion,
+            0.9
+        ),
+        SignalPattern(
+            #"\b(?:should\s+we|need\s+(?:a\s+)?decision|which\s+(?:option|approach|path)|go\s*/?\s*no[- ]go)\b"#,
+            .decisionPending,
+            0.8
+        ),
+        SignalPattern(#"\?\s*$"#, .openQuestion, 0.55),
+    ]
+
+    func classify(text rawText: String) -> RuleVerdict {
+        let text = SlackTextSanitizer.stripFencedBlocks(rawText)
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return .contextOnly
+        }
+        let range = NSRange(text.startIndex..., in: text)
+        for pattern in Self.patterns where pattern.regex.firstMatch(in: text, range: range) != nil {
+            return RuleVerdict(
+                messageClass: pattern.messageClass,
+                confidence: pattern.confidence
+            )
+        }
+        return .contextOnly
     }
 }

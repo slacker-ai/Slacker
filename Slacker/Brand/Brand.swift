@@ -18,7 +18,7 @@ enum Brand {
         startPoint: .topLeading, endPoint: .bottomTrailing
     )
 
-    static let tagline = "Nothing falls through the cracks."
+    static let tagline = "Cut the chatter with slacker"
 
     // MARK: Type
     static func display(_ size: CGFloat, _ weight: Font.Weight = .semibold) -> Font {

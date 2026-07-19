@@ -16,8 +16,17 @@ struct Message: Codable, Identifiable, Equatable, FetchableRecord, PersistableRe
     var ts: String
     /// Raw reactions JSON array (`[{"name":...,"count":...}]`), or nil.
     var reactionsJSON: String?
+    /// Local time when this message was first observed. Unlike Slack's server timestamp,
+    /// this is directly comparable to an item's local `lastEvaluatedAt` boundary.
+    var firstObservedAt: Date?
+    /// Local time when a persisted message's text last changed.
+    var contentEditedAt: Date?
+    /// Local time when an open-loop reaction (eyes/hourglass/etc.) was newly observed.
+    var openReactionObservedAt: Date?
     /// Local time when a resolved/done reaction was newly observed on this message.
     var resolvedReactionObservedAt: Date?
+    /// Local time when the final resolved/done reaction was removed from this message.
+    var resolvedReactionRemovedAt: Date?
     var ingestedAt: Date
 
     static func makeID(channelID: String, ts: String) -> String { "\(channelID):\(ts)" }
@@ -32,7 +41,11 @@ struct Message: Codable, Identifiable, Equatable, FetchableRecord, PersistableRe
         userID: String?,
         text: String,
         reactionsJSON: String?,
+        firstObservedAt: Date? = nil,
+        contentEditedAt: Date? = nil,
+        openReactionObservedAt: Date? = nil,
         resolvedReactionObservedAt: Date? = nil,
+        resolvedReactionRemovedAt: Date? = nil,
         ingestedAt: Date
     ) {
         self.id = Message.makeID(channelID: channelID, ts: ts)
@@ -42,7 +55,11 @@ struct Message: Codable, Identifiable, Equatable, FetchableRecord, PersistableRe
         self.userID = userID
         self.text = text
         self.reactionsJSON = reactionsJSON
+        self.firstObservedAt = firstObservedAt
+        self.contentEditedAt = contentEditedAt
+        self.openReactionObservedAt = openReactionObservedAt
         self.resolvedReactionObservedAt = resolvedReactionObservedAt
+        self.resolvedReactionRemovedAt = resolvedReactionRemovedAt
         self.ingestedAt = ingestedAt
     }
 }

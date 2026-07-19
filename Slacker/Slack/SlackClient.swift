@@ -16,7 +16,7 @@ enum SlackClientError: Error, Equatable {
 /// - Token is passed per-request as a Bearer header; it is never logged.
 /// - Honors HTTP 429 `Retry-After` with bounded retries (§3 resilience).
 /// - Pagination is handled internally for `conversations.list`.
-struct SlackClient {
+struct SlackClient: Sendable {
     private let transport: HTTPTransport
     private let baseURL: URL
     private let maxRetries: Int
@@ -42,6 +42,25 @@ struct SlackClient {
     /// Validate a token and identify the workspace + user (`auth.test`).
     func authTest(token: String) async throws -> AuthTestResponse {
         try await call("auth.test", token: token, queryItems: [])
+    }
+
+    /// Exchange an app-level token for Slack's short-lived Socket Mode URL.
+    /// The returned URL must be connected immediately and never persisted or logged.
+    func openSocketModeConnection(appToken: String) async throws -> URL {
+        let response: AppsConnectionsOpenResponse = try await call(
+            "apps.connections.open",
+            token: appToken,
+            queryItems: [],
+            httpMethod: "POST"
+        )
+        guard let value = response.url,
+              let url = URL(string: value),
+              url.scheme?.lowercased() == "wss",
+              let host = url.host?.lowercased(),
+              host == "slack.com" || host.hasSuffix(".slack.com") else {
+            throw SlackClientError.decoding
+        }
+        return url
     }
 
     /// Fetch a single user's profile (`users.info`).
@@ -154,9 +173,15 @@ struct SlackClient {
     private func call<T: SlackAPIResponse>(
         _ method: String,
         token: String,
-        queryItems: [URLQueryItem]
+        queryItems: [URLQueryItem],
+        httpMethod: String = "GET"
     ) async throws -> T {
-        let request = makeRequest(method: method, token: token, queryItems: queryItems)
+        let request = makeRequest(
+            method: method,
+            token: token,
+            queryItems: queryItems,
+            httpMethod: httpMethod
+        )
 
         var attempt = 0
         while true {
@@ -188,7 +213,12 @@ struct SlackClient {
         }
     }
 
-    private func makeRequest(method: String, token: String, queryItems: [URLQueryItem]) -> URLRequest {
+    private func makeRequest(
+        method: String,
+        token: String,
+        queryItems: [URLQueryItem],
+        httpMethod: String
+    ) -> URLRequest {
         var components = URLComponents(
             url: baseURL.appendingPathComponent(method),
             resolvingAgainstBaseURL: false
@@ -198,7 +228,7 @@ struct SlackClient {
         }
 
         var request = URLRequest(url: components.url!)
-        request.httpMethod = "GET"
+        request.httpMethod = httpMethod
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         return request
     }

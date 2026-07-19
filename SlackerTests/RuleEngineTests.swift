@@ -130,6 +130,19 @@ final class RuleEngineTests: XCTestCase {
         XCTAssertEqual(engine.classify(text: "facing issues with the deploy").messageClass, .blocker)
     }
 
+    func testIssuePreventingOutcomeIsBlocker() {
+        let verdict = engine.classify(
+            text: "Theres a networking issue which is preventing trades from being placed"
+        )
+
+        XCTAssertEqual(verdict.messageClass, .blocker)
+        XCTAssertGreaterThanOrEqual(verdict.confidence, 0.8)
+        XCTAssertEqual(
+            engine.classify(text: "This guard prevents a networking issue from affecting trades").messageClass,
+            .contextOnly
+        )
+    }
+
     func testHelpRequestIsOpenQuestion() {
         XCTAssertEqual(engine.classify(text: "any idea why CI is red").messageClass, .openQuestion)
         XCTAssertEqual(engine.classify(text: "how do I reset the staging db").messageClass, .openQuestion)
@@ -169,6 +182,21 @@ final class RuleEngineTests: XCTestCase {
         XCTAssertEqual(learned.classify(text: "red alert on the payments queue").messageClass, .blocker)
     }
 
+    func testLearnedDismissPhraseSuppressesPositiveSignals() {
+        let bank = LearnedPhraseBank(phrasesByBucket: [.dismiss: ["production is down"]])
+        let learned = RuleEngine(learned: bank)
+
+        let verdict = learned.classify(
+            text: "Production is down, can someone investigate?"
+        )
+
+        XCTAssertEqual(verdict.messageClass, .contextOnly)
+        XCTAssertTrue(verdict.shouldDismiss)
+        XCTAssertEqual(verdict.confidence, 1.0)
+        XCTAssertFalse(RuleEngine.isAdmissibleLearnedPhrase("production is down"))
+        XCTAssertTrue(RuleEngine.isAdmissibleLearnedPhrase("production is down", for: .dismiss))
+    }
+
     func testTwoEnginesDoNotInterfere() {
         // Proves no shared static mutation: distinct banks → distinct results.
         let a = RuleEngine(learned: LearnedPhraseBank(phrasesByBucket: [.help: ["spin up a"]]))
@@ -187,5 +215,26 @@ final class RuleEngineTests: XCTestCase {
         // A single-token learned phrase is dropped at injection.
         let bank = LearnedPhraseBank(phrasesByBucket: [.blocker: ["broken"]])
         XCTAssertEqual(RuleEngine(learned: bank).classify(text: "the build is broken").messageClass, .contextOnly)
+    }
+
+    // MARK: - Terminal-thread regex reopening
+
+    func testReopenRegexRecognizesRegressionLanguage() {
+        let detector = ReopenSignalDetector()
+        XCTAssertEqual(detector.classify(text: "this is still failing").messageClass, .blocker)
+        XCTAssertEqual(detector.classify(text: "the outage is back").messageClass, .blocker)
+        XCTAssertEqual(detector.classify(text: "this was never actually fixed").messageClass, .blocker)
+        XCTAssertEqual(detector.classify(text: "the issue is affecting prod").messageClass, .blocker)
+    }
+
+    func testReopenRegexRecognizesNewAskAndIgnoresContext() {
+        let detector = ReopenSignalDetector()
+        XCTAssertEqual(detector.classify(text: "could someone take a look?").messageClass, .openQuestion)
+        XCTAssertEqual(detector.classify(text: "any update here?").messageClass, .openQuestion)
+        XCTAssertEqual(detector.classify(text: "thanks again for the help").messageClass, .contextOnly)
+        XCTAssertEqual(
+            detector.classify(text: "logs:\n```\nthe outage is back\n```").messageClass,
+            .contextOnly
+        )
     }
 }
