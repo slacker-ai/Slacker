@@ -102,7 +102,7 @@ final class LearnedPatternsModel {
     }
 
     var canSaveManualPhrase: Bool {
-        RuleEngine.isAdmissibleLearnedPhrase(normalizedManualPhrase)
+        RuleEngine.isAdmissibleLearnedPhrase(normalizedManualPhrase, for: manualPhraseBucket)
     }
 
     var manualPhraseValidationMessage: String? {
@@ -111,7 +111,7 @@ final class LearnedPatternsModel {
         guard phrase.count >= 6, phrase.contains(" ") else {
             return "Use a specific multi-word phrase."
         }
-        guard RuleEngine.isAdmissibleLearnedPhrase(phrase) else {
+        guard RuleEngine.isAdmissibleLearnedPhrase(phrase, for: manualPhraseBucket) else {
             return "That phrase is already covered by built-in rules."
         }
         return nil

@@ -173,6 +173,8 @@ With an LLM configured:
 - After a triage action, watch logs for `LLM pattern evolution used[...]` or a clean skip/fail
   message.
 - Verify useful output is active immediately and no approval alert or Evolution column appears.
+- Add a manual learned phrase with type **Dismiss**. A matching actionable message should
+  not surface; if a matching item is already active, the next detection pass should dismiss it.
 - Verify **Approved phrases** starts collapsed, displays its active count, and reveals phrase
   management only when expanded.
 - In Settings, verify the global document affects every channel and an expanded channel

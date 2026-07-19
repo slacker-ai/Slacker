@@ -163,7 +163,8 @@ struct DetectionService {
             let existing = itemsByRootTS[root.ts]
             let hasMention = mentionsConnectedUser(in: [root] + replies, authUserID: authUserID)
             let classification: Classification
-            if hasMention && existing == nil {
+            let isDismissedByKeyword = channelClassifier.ruleEngine.classify(text: root.text).shouldDismiss
+            if hasMention && existing == nil && !isDismissedByKeyword {
                 classification = Classification(type: .mention, state: .surfaced, confidence: 1.0)
                 Log.info("Mention classifier[#\(channel.name) ts=\(root.ts)]: routed=surfaced.")
             } else {
@@ -206,6 +207,7 @@ struct DetectionService {
             channel: channel,
             messages: messages,
             authUserID: authUserID,
+            classifier: channelClassifier,
             rootTSFilter: onlyRootTS
         )
         let reopened = try await reopenTerminalItems(
@@ -244,6 +246,11 @@ struct DetectionService {
         Log.info(
             "Rules classifier[#\(channel.name) ts=\(root.ts)]: signal=\(ruleResult.type?.rawValue ?? "none"), confidence=\(ruleResult.confidence), routed=\(ruleResult.state?.rawValue ?? "none")."
         )
+
+        if ruleResult.shouldDismiss {
+            Log.info("Rules classifier[#\(channel.name) ts=\(root.ts)]: matched user dismiss phrase.")
+            return ruleResult
+        }
 
         guard let llmClassifier,
               ruleResult.state == .review || llmClassifier.hasGuidance else {
@@ -353,6 +360,20 @@ struct DetectionService {
                 .filter(Column("channelID") == channel.id && Column("rootMessageTS") == root.ts)
                 .fetchOne(db)
 
+            // A learned dismiss phrase is an explicit user-authored rule. Hide an active
+            // matching item, but do not create tombstone rows for messages never surfaced.
+            if classification.shouldDismiss {
+                guard var existing,
+                      existing.state == .open || existing.state == .surfaced || existing.state == .review else {
+                    return
+                }
+                existing.state = .dismissed
+                existing.resolutionReason = nil
+                existing.lastEvaluatedAt = now()
+                try existing.update(db)
+                return
+            }
+
             // Ordinary root reclassification never resurrects terminal work. Resolved or
             // dismissed items can return only through `reopenTerminalItems`, which requires
             // activity observed after the user's last decision. Legacy snoozes stay inert.
@@ -411,6 +432,7 @@ struct DetectionService {
         channel: Channel,
         messages: [Message],
         authUserID: String,
+        classifier: Classifier,
         rootTSFilter: Set<String>? = nil
     ) async throws -> Int {
         guard !authUserID.isEmpty else { return 0 }
@@ -427,6 +449,9 @@ struct DetectionService {
 
         var revived = 0
         for item in terminalItems {
+            guard !isDismissedByKeyword(item: item, messages: messages, classifier: classifier) else {
+                continue
+            }
             let newMention = messages
                 .filter { message in
                     (message.ts == item.rootMessageTS || message.threadTS == item.rootMessageTS)
@@ -475,6 +500,9 @@ struct DetectionService {
 
         var reopened = 0
         for item in terminalItems {
+            guard !isDismissedByKeyword(item: item, messages: messages, classifier: classifier) else {
+                continue
+            }
             let threadMessages = messages.filter {
                 $0.ts == item.rootMessageTS || $0.threadTS == item.rootMessageTS
             }
@@ -557,6 +585,10 @@ struct DetectionService {
             "Regex reopen classifier[#\(channel.name) ts=\(message.ts)]: signal=\(ruleResult.type?.rawValue ?? "none"), confidence=\(ruleResult.confidence), routed=\(ruleResult.state?.rawValue ?? "none")."
         )
 
+        if ruleResult.shouldDismiss {
+            return ruleResult
+        }
+
         guard let llmClassifier,
               ruleResult.state == .review || llmClassifier.hasGuidance else {
             return ruleResult
@@ -603,6 +635,17 @@ struct DetectionService {
             try fresh.update(db)
             return true
         }
+    }
+
+    private func isDismissedByKeyword(
+        item: Item,
+        messages: [Message],
+        classifier: Classifier
+    ) -> Bool {
+        guard let root = messages.first(where: { $0.ts == item.rootMessageTS }) else {
+            return false
+        }
+        return classifier.ruleEngine.classify(text: root.text).shouldDismiss
     }
 
     private func activityDate(for message: Message) -> Date {

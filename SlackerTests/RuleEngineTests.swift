@@ -182,6 +182,21 @@ final class RuleEngineTests: XCTestCase {
         XCTAssertEqual(learned.classify(text: "red alert on the payments queue").messageClass, .blocker)
     }
 
+    func testLearnedDismissPhraseSuppressesPositiveSignals() {
+        let bank = LearnedPhraseBank(phrasesByBucket: [.dismiss: ["production is down"]])
+        let learned = RuleEngine(learned: bank)
+
+        let verdict = learned.classify(
+            text: "Production is down, can someone investigate?"
+        )
+
+        XCTAssertEqual(verdict.messageClass, .contextOnly)
+        XCTAssertTrue(verdict.shouldDismiss)
+        XCTAssertEqual(verdict.confidence, 1.0)
+        XCTAssertFalse(RuleEngine.isAdmissibleLearnedPhrase("production is down"))
+        XCTAssertTrue(RuleEngine.isAdmissibleLearnedPhrase("production is down", for: .dismiss))
+    }
+
     func testTwoEnginesDoNotInterfere() {
         // Proves no shared static mutation: distinct banks → distinct results.
         let a = RuleEngine(learned: LearnedPhraseBank(phrasesByBucket: [.help: ["spin up a"]]))

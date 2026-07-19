@@ -369,7 +369,7 @@ struct PatternStore {
     /// exists in any lifecycle state, promote that row instead of inserting a duplicate.
     func saveManualPattern(channelID: String?, bucket: RuleBucket, phrase: String) async throws {
         let normalized = phrase.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard RuleEngine.isAdmissibleLearnedPhrase(normalized) else { return }
+        guard RuleEngine.isAdmissibleLearnedPhrase(normalized, for: bucket) else { return }
 
         let timestamp = now()
         try await database.dbWriter.write { db in

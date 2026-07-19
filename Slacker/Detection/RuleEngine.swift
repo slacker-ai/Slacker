@@ -13,6 +13,15 @@ enum MessageClass: String, Equatable {
 struct RuleVerdict: Equatable {
     let messageClass: MessageClass
     let confidence: Double
+    /// A user-configured suppression phrase is authoritative. It must not be promoted
+    /// again by stale-follow-up rules or the LLM guidance pass.
+    let shouldDismiss: Bool
+
+    init(messageClass: MessageClass, confidence: Double, shouldDismiss: Bool = false) {
+        self.messageClass = messageClass
+        self.confidence = confidence
+        self.shouldDismiss = shouldDismiss
+    }
 
     static let contextOnly = RuleVerdict(messageClass: .contextOnly, confidence: 0.0)
 }
@@ -119,15 +128,18 @@ struct RuleEngine {
 
     /// A learned phrase is admissible only if it's multi-word and long enough. Keeps the
     /// learned overlay from broadening the rules into noise (§6b precision invariant).
-    static func isAdmissibleLearnedPhrase(_ raw: String) -> Bool {
+    static func isAdmissibleLearnedPhrase(_ raw: String, for bucket: RuleBucket? = nil) -> Bool {
         let phrase = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard phrase.count >= minLearnedPhraseLength, phrase.contains(" ") else { return false }
+        // A dismissal intentionally overrides a built-in positive phrase.
+        if bucket == .dismiss { return true }
         return !allBasePhrases.contains(phrase)
     }
 
     // MARK: - Per-instance banks (base + learned)
 
     private let askPhrases: [String]
+    private let dismissPhrases: [String]
     private let blockerPhrases: [String]
     private let problemPhrases: [String]
     private let helpPhrases: [String]
@@ -138,18 +150,23 @@ struct RuleEngine {
 
     init(learned: LearnedPhraseBank = .empty) {
         self.learned = learned
-        self.askPhrases = Self.merged(Self.baseAsk, learned.phrases(for: .ask))
-        self.blockerPhrases = Self.merged(Self.baseBlocker, learned.phrases(for: .blocker))
-        self.problemPhrases = Self.merged(Self.baseProblem, learned.phrases(for: .problem))
-        self.helpPhrases = Self.merged(Self.baseHelp, learned.phrases(for: .help))
-        self.decisionPhrases = Self.merged(Self.baseDecision, learned.phrases(for: .decision))
-        self.deadlinePhrases = Self.merged(Self.baseDeadline, learned.phrases(for: .deadline))
+        self.dismissPhrases = Self.merged([], learned.phrases(for: .dismiss), bucket: .dismiss)
+        self.askPhrases = Self.merged(Self.baseAsk, learned.phrases(for: .ask), bucket: .ask)
+        self.blockerPhrases = Self.merged(Self.baseBlocker, learned.phrases(for: .blocker), bucket: .blocker)
+        self.problemPhrases = Self.merged(Self.baseProblem, learned.phrases(for: .problem), bucket: .problem)
+        self.helpPhrases = Self.merged(Self.baseHelp, learned.phrases(for: .help), bucket: .help)
+        self.decisionPhrases = Self.merged(Self.baseDecision, learned.phrases(for: .decision), bucket: .decision)
+        self.deadlinePhrases = Self.merged(Self.baseDeadline, learned.phrases(for: .deadline), bucket: .deadline)
     }
 
     /// Base + admissible learned phrases (lowercased), de-duplicated.
-    private static func merged(_ base: [String], _ learnedPhrases: [String]) -> [String] {
+    private static func merged(
+        _ base: [String],
+        _ learnedPhrases: [String],
+        bucket: RuleBucket
+    ) -> [String] {
         let admissible = learnedPhrases
-            .filter(isAdmissibleLearnedPhrase)
+            .filter { isAdmissibleLearnedPhrase($0, for: bucket) }
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
         // Base first (preserves existing precedence); learned appended, no duplicates.
         var seen = Set(base)
@@ -161,6 +178,12 @@ struct RuleEngine {
         let text = rawText.lowercased()
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return .contextOnly }
+
+        // Explicit user suppression wins over every positive keyword. Treat it as a
+        // hard context-only verdict so downstream LLM classification cannot revive it.
+        if contains(text, dismissPhrases) {
+            return RuleVerdict(messageClass: .contextOnly, confidence: 1.0, shouldDismiss: true)
+        }
 
         let isDirected = rawText.contains("<@") || rawText.contains("@here") || rawText.contains("@channel")
         let isQuestion = trimmed.hasSuffix("?") || contains(text, askPhrases)

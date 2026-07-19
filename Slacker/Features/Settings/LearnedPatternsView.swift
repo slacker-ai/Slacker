@@ -133,6 +133,11 @@ struct LearnedPatternsView: View {
                     }
                 }
                 .labelsHidden()
+                if model.manualPhraseBucket == .dismiss {
+                    Text("Messages containing this phrase will be dismissed instead of surfaced.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
 
             HStack(spacing: 8) {

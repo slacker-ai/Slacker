@@ -292,7 +292,7 @@ struct PatternEvolutionService {
         for item in proposed {
             guard let bucket = RuleBucket(rawValue: item.bucket) else { continue }
             let phrase = item.phrase.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-            guard RuleEngine.isAdmissibleLearnedPhrase(phrase),
+            guard RuleEngine.isAdmissibleLearnedPhrase(phrase, for: bucket),
                   seen.insert("\(bucket.rawValue):\(phrase)").inserted else { continue }
             let timestamp = now()
             result.append(LearnedPattern(

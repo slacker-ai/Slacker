@@ -204,6 +204,21 @@ final class PatternStoreTests: XCTestCase {
         XCTAssertEqual(stored?.source, .manual)
     }
 
+    func testManualDismissPhraseCanOverrideBuiltInPositivePhrase() async throws {
+        let db = try makeDB()
+        let store = PatternStore(database: db)
+
+        try await store.saveManualPattern(
+            channelID: "C1",
+            bucket: .dismiss,
+            phrase: "production is down"
+        )
+
+        let bank = try await store.activePhraseBank(forChannelID: "C1")
+        XCTAssertEqual(bank.phrases(for: .dismiss), ["production is down"])
+        XCTAssertTrue(RuleEngine(learned: bank).classify(text: "production is down").shouldDismiss)
+    }
+
     func testRejectAllProposalsLeavesApprovedRowsActive() async throws {
         let db = try makeDB()
         let store = PatternStore(database: db)

@@ -97,6 +97,57 @@ final class DetectionServiceTests: XCTestCase {
         XCTAssertEqual(count, 0)
     }
 
+    func testLearnedDismissPhraseDismissesActiveItemWithoutCreatingNewItems() async throws {
+        let db = try AppDatabase.makeInMemory()
+        try seedChannel(db)
+        try insert(
+            db,
+            ts: "100.0",
+            user: "U1",
+            text: "Automated status report: production is down, can someone investigate?"
+        )
+        try insert(
+            db,
+            ts: "200.0",
+            user: "U1",
+            text: "Automated status report: build failed, can someone investigate?"
+        )
+        try await insertItem(db, root: "100.0", type: .stale, state: .surfaced)
+
+        let store = PatternStore(database: db)
+        try await store.saveManualPattern(
+            channelID: nil,
+            bucket: .dismiss,
+            phrase: "automated status report"
+        )
+        var service = makeService(db)
+        service.patternStore = store
+
+        try await service.detectWatchedChannels()
+
+        let items = try await db.dbWriter.read { try Item.fetchAll($0) }
+        XCTAssertEqual(items.count, 1, "suppression must not create hidden tombstone items")
+        XCTAssertEqual(items.first?.rootMessageTS, "100.0")
+        XCTAssertEqual(items.first?.state, .dismissed)
+        let labelCount = try await db.dbWriter.read { try TriageLabel.fetchCount($0) }
+        XCTAssertEqual(labelCount, 0, "automatic keyword suppression is not a user triage label")
+
+        try insert(
+            db,
+            ts: "201.0",
+            user: "U2",
+            text: "the outage is back",
+            threadTS: "100.0",
+            firstObservedAt: fixedNow.addingTimeInterval(1)
+        )
+        try await service.detectChangedRoots(["C1": ["100.0"]])
+
+        let stateAfterReply = try await db.dbWriter.read {
+            try Item.fetchOne($0, key: "item-100.0")?.state
+        }
+        XCTAssertEqual(stateAfterReply, .dismissed, "new activity must not bypass an active dismiss phrase")
+    }
+
     func testAlreadyResolvedThreadDoesNotCreateTransientItem() async throws {
         let db = try AppDatabase.makeInMemory()
         try seedChannel(db)

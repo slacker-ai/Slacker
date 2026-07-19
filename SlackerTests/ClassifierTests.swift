@@ -69,6 +69,24 @@ final class ClassifierTests: XCTestCase {
         XCTAssertEqual(c.state, .surfaced)
     }
 
+    func testDismissPhraseWinsOverFollowUpReply() {
+        let classifier = Classifier(
+            ruleEngine: RuleEngine(
+                learned: LearnedPhraseBank(phrasesByBucket: [.dismiss: ["automated status report"]])
+            )
+        )
+        let c = classifier.classifyThread(
+            rootText: "Automated status report: production is down",
+            replies: [reply("U1", ts: "101.0", text: "following up on this")],
+            rootUserID: "U1",
+            sensitivity: .normal
+        )
+
+        XCTAssertNil(c.type)
+        XCTAssertNil(c.state)
+        XCTAssertTrue(c.shouldDismiss)
+    }
+
     func testFollowUpReplyIgnoresFencedLogs() {
         let c = classifier.classifyThread(
             rootText: "<@U2> can you confirm the rollout time?",

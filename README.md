@@ -14,6 +14,14 @@
   <img alt="Version: 1.0.0" src="https://img.shields.io/badge/release-v1.0.0-blue">
 </p>
 
+<p align="center">
+  <a href="https://www.youtube.com/watch?v=XZ6wfB3QBmo">
+    <img src="https://i.ytimg.com/vi/XZ6wfB3QBmo/hqdefault.jpg" alt="Watch the Slacker demo" width="600">
+  </a>
+  <br>
+  <a href="https://www.youtube.com/watch?v=XZ6wfB3QBmo"><strong>Watch the Slacker demo</strong></a>
+</p>
+
 Slacker is a self-evolving, local-first macOS app that surfaces the Slack
 threads that actually need attention.
 
