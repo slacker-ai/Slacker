@@ -18,7 +18,6 @@ struct SettingsView: View {
         .anthropic: ["claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5-20251001", "claude-fable-5"],
         .claudeCode: ["claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5-20251001"],
         .openAI: ["gpt-4o", "gpt-4o-mini", "gpt-4.1", "o4-mini"],
-        .codexCLI: ["gpt-4o", "gpt-4.1", "o4-mini"],
         .gemini: ["gemini-2.0-flash", "gemini-2.0-pro", "gemini-1.5-pro", "gemini-1.5-flash"],
     ]
     /// Sentinel tag for the "Custom…" dropdown entry.
@@ -303,7 +302,9 @@ struct SettingsView: View {
                 }
                 .labelsHidden()
             }
-            modelRow
+            if !isCLIProvider {
+                modelRow
+            }
             if needsAPIKey {
                 LabeledRow("API key",
                            help: "Your provider API key. Stored only in the macOS Keychain — never written to disk or logs, never sent to us.") {

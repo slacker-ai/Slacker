@@ -213,10 +213,10 @@ final class LLMClientFactoryTests: XCTestCase {
         }
     }
 
-    func testCodexCLIInvokesExecWithCombinedPrompt() async throws {
+    func testCodexCLIUsesAccountDefaultModelAndCombinedPrompt() async throws {
         let runner = StubCLIRunner(output: "verdict")
         let client = try LLMClientFactory.make(
-            settings: settings(.codexCLI, cliOverride: "/usr/local/bin/codex"),
+            settings: settings(.codexCLI, model: "gpt-4o", cliOverride: "/usr/local/bin/codex"),
             apiKey: nil,
             runner: runner,
             locate: { _, override in override }  // honor the override path
@@ -231,7 +231,6 @@ final class LLMClientFactoryTests: XCTestCase {
             "--disable", "shell_snapshot",
             "--ephemeral",
             "--sandbox", "read-only",
-            "--model", "m",
             "--skip-git-repo-check",
             "-",
         ])

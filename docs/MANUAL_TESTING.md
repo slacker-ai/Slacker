@@ -115,7 +115,9 @@ Pass criteria:
   tooltip appears on hover.
 - **Provider:** Anthropic (default), OpenAI, Gemini, Generic API, Ollama, Codex CLI,
   or Claude Code.
-- **Model:** e.g. `claude-opus-4-8`, `gpt-4o`, `gemini-2.0-flash`, `llama3` (Ollama).
+- **Model (non-CLI providers):** e.g. `claude-opus-4-8`, `gpt-4o`,
+  `gemini-2.0-flash`, `llama3` (Ollama). CLI providers select a model compatible
+  with the signed-in subscription.
 - **API key:** stored only in the Keychain (HTTP providers). Ollama/CLI need no key.
 - **Endpoint URL:** for Generic API / Ollama (defaults to `localhost:11434` for Ollama).
 - **CLI path:** optional override for Codex/Claude Code (otherwise auto-detected on PATH).

@@ -55,6 +55,8 @@ enum LLMClientFactory {
             return CLILLMClient(runner: runner, executable: path) { request in
                 // Slacker needs only model output. Loading the user's Codex config would also
                 // start their MCP servers, plugins, and notification hooks on every request.
+                // Let Codex select its account-compatible default model; API model IDs such as
+                // gpt-4o are not necessarily available through ChatGPT subscription auth.
                 ([
                     "exec",
                     "--ignore-user-config",
@@ -63,7 +65,6 @@ enum LLMClientFactory {
                     "--disable", "shell_snapshot",
                     "--ephemeral",
                     "--sandbox", "read-only",
-                    "--model", model,
                     "--skip-git-repo-check",
                     "-",
                 ], CLILLMClient.combinedPrompt(request))
@@ -82,7 +83,8 @@ enum LLMClientFactory {
     static func defaultModel(for provider: LLMProvider) -> String {
         switch provider {
         case .anthropic, .claudeCode: return "claude-opus-4-8"
-        case .openAI, .codexCLI, .genericAPI: return "gpt-4o"
+        case .openAI, .genericAPI: return "gpt-4o"
+        case .codexCLI: return ""
         case .gemini: return "gemini-2.0-flash"
         case .ollama: return "llama3"
         }
