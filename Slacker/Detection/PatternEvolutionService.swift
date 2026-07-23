@@ -32,6 +32,9 @@ struct PatternEvolutionService {
     - For mark_resolved, learn what counts as done from replies and reactions; never learn
       a trigger phrase from the original ask.
     - For ignore, prefer concise suppression guidance and do not return trigger phrases.
+    - Matching verdicts for the same normalized message in multiple channels are strong
+      evidence that the behavior belongs in globalGuidance. When that evidence is present
+      and no global rule covers it, return globalGuidance instead of an empty proposal.
     - Never quote raw messages as rules, single out individuals, duplicate existing rules,
       or broaden a rule from one weak example. Empty fields are correct when nothing safe
       and reusable was learned.
@@ -83,6 +86,11 @@ struct PatternEvolutionService {
     ) async throws {
         guard let thread = try await threadText(channelID: channelID, rootTS: messageTS) else { return }
         let context = try await recentContext(channelID: channelID, excludingTS: messageTS)
+        let matchingCrossChannel = try await matchingCrossChannelContext(
+            channelID: channelID,
+            messageTS: messageTS,
+            verdict: verdict
+        )
         let coverage = try await store.evolutionCoverageContext(forChannelID: channelID)
         let request = LLMRequest(
             system: system,
@@ -92,6 +100,7 @@ struct PatternEvolutionService {
                 source: source,
                 matters: context.matters,
                 ignore: context.ignore,
+                matchingCrossChannel: matchingCrossChannel,
                 coverage: coverage
             ),
             maxTokens: 600
@@ -115,13 +124,20 @@ struct PatternEvolutionService {
             : validatedPatterns(from: proposal.phrases, channelID: channelID)
         let global = validatedGuidance(proposal.globalGuidance)
         let channel = validatedGuidance(proposal.channelGuidance)
-        guard !patterns.isEmpty || !global.isEmpty || !channel.isEmpty else { return }
+        guard !patterns.isEmpty || !global.isEmpty || !channel.isEmpty else {
+            Log.info("LLM pattern evolution[\(channelID)]: no new reusable guidance or phrase.")
+            return
+        }
 
         try await store.activateEvolution(
             patterns: patterns,
             globalGuidance: global,
             channelGuidance: channel,
             channelID: channelID
+        )
+        Log.info(
+            "LLM pattern evolution[\(channelID)]: activated \(patterns.count) phrase(s), "
+                + "global guidance=\(!global.isEmpty), channel guidance=\(!channel.isEmpty)."
         )
         try await condenseIfNeeded(channelID: channelID, llm: llm)
     }
@@ -207,6 +223,53 @@ struct PatternEvolutionService {
         )
     }
 
+    /// Same-message feedback from other channels is the minimum evidence needed to
+    /// distinguish a globally reusable behavior from channel-specific vocabulary.
+    private func matchingCrossChannelContext(
+        channelID: String,
+        messageTS: String,
+        verdict: UserVerdict
+    ) async throws -> [String] {
+        try await database.dbWriter.read { db in
+            let currentKey = Message.makeID(channelID: channelID, ts: messageTS)
+            guard let current = try Message.fetchOne(db, key: currentKey) else { return [] }
+            let currentText = normalizedMessageText(current.text)
+            guard !currentText.isEmpty else { return [] }
+
+            let labels = try TriageLabel
+                .filter(Column("channelID") != channelID)
+                .filter(Column("userVerdict") == verdict.rawValue)
+                .order(Column("createdAt").desc)
+                .limit(recentLabelLimit)
+                .fetchAll(db)
+
+            var seenChannels = Set<String>()
+            return labels.compactMap { label in
+                guard seenChannels.insert(label.channelID).inserted,
+                      let message = try? Message.fetchOne(
+                        db,
+                        key: Message.makeID(channelID: label.channelID, ts: label.messageTS)
+                      ),
+                      normalizedMessageText(message.text) == currentText,
+                      let rendered = renderMessage(message) else {
+                    return nil
+                }
+                let channelName = (try? Channel.fetchOne(db, key: label.channelID))?.name
+                    ?? label.channelID
+                return "[#\(channelName)] \(rendered)"
+            }
+            .prefix(contextExamplesPerSide)
+            .map { $0 }
+        }
+    }
+
+    private func normalizedMessageText(_ text: String) -> String {
+        SlackTextSanitizer.stripFencedBlocks(text)
+            .lowercased()
+            .split(whereSeparator: \.isWhitespace)
+            .joined(separator: " ")
+    }
+
     private func examplesWithText(_ labels: [TriageLabel], channelID: String) async throws -> [Example] {
         try await database.dbWriter.read { db in
             labels.compactMap { label in
@@ -247,6 +310,7 @@ struct PatternEvolutionService {
         source: LabelSource?,
         matters: [String],
         ignore: [String],
+        matchingCrossChannel: [String],
         coverage: PatternStore.EvolutionCoverageContext
     ) -> String {
         func block(_ title: String, _ values: [String]) -> String {
@@ -283,6 +347,11 @@ struct PatternEvolutionService {
 
         \(block("MATTERS EXAMPLES", matters))
         \(block("IGNORE EXAMPLES", ignore))
+
+        \(block(
+            "MATCHING USER FEEDBACK IN OTHER CHANNELS (same normalized root text, verdict: \(verdict.rawValue))",
+            matchingCrossChannel
+        ))
         """
     }
 

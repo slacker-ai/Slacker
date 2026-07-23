@@ -40,30 +40,16 @@ struct SlackerApp: App {
         MenuBarExtra {
             MenuBarContentView(root: root)
         } label: {
-            // Badge: app icon + open-item count (§8.1).
+            // A template symbol stays legible in both menu-bar appearances. Rendering
+            // the full-color Dock icon here made the status item easy to miss.
             let count = root.badgeCount
-            Image(nsImage: MenuBarIcon.image)
+            Image(systemName: "cup.and.saucer.fill")
+                .accessibilityLabel("Slacker")
+                .help("Slacker")
             if count > 0 { Text("\(count)") }
         }
         .menuBarExtraStyle(.window)
     }
-}
-
-private enum MenuBarIcon {
-    static let image: NSImage = {
-        let canvasSize = NSSize(width: 20, height: 20)
-        let image = NSImage(size: canvasSize)
-        image.lockFocus()
-        NSApplication.shared.applicationIconImage.draw(
-            in: NSRect(x: 0, y: 0, width: 20, height: 20),
-            from: .zero,
-            operation: .sourceOver,
-            fraction: 1
-        )
-        image.unlockFocus()
-        image.isTemplate = false
-        return image
-    }()
 }
 
 /// Routes between onboarding and the main UI based on app state.

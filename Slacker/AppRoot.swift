@@ -183,10 +183,12 @@ final class AppRoot {
         // Every explicit user action immediately learns approved phrases/guidance in the
         // background. The action itself never waits for the model.
         mainViewModel?.onTriageLabeled = { [weak self] channelID, messageTS, verdict, source in
-            let enabled = try? await db.dbWriter.read {
-                try AppSettings.fetchOne($0, key: 1)?.selfEvolutionEnabled
+            // Read the live settings model, not the debounced database copy. Otherwise a
+            // triage click immediately after enabling evolution can be silently skipped.
+            let enabled = await MainActor.run {
+                self?.settingsModel?.settings.selfEvolutionEnabled ?? true
             }
-            guard (enabled ?? nil) ?? true else { return }
+            guard enabled else { return }
 
             await evolution.evolveFromTriage(channelID: channelID, messageTS: messageTS, verdict: verdict, source: source)
             await self?.settingsModel?.learnedPatternsModel.load()
