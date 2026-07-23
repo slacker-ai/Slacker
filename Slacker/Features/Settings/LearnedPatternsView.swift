@@ -23,7 +23,7 @@ struct LearnedPatternsView: View {
 
     private var introSection: some View {
         Section {
-            Text("User actions update these prompts automatically. You can edit every active document directly; changes save automatically.")
+            Text("User actions can update these prompts when they teach a new reusable rule. Most automatic changes are saved under the source channel below; the global document changes only for rules that apply everywhere.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
             if !model.hasAnything {
@@ -241,8 +241,18 @@ struct LearnedPatternsView: View {
                             channelGuidanceEditor
                                 .padding(.top, 8)
                         } label: {
-                            Label(channel.name, systemImage: channel.isPrivate ? "lock.fill" : "number")
-                                .font(.body.weight(.medium))
+                            HStack {
+                                Label(channel.name, systemImage: channel.isPrivate ? "lock.fill" : "number")
+                                    .font(.body.weight(.medium))
+                                if model.activeChannelGuidance.contains(where: { $0.channelID == channel.id }) {
+                                    Text("Learned")
+                                        .font(.caption2.weight(.semibold))
+                                        .foregroundStyle(Brand.primary)
+                                        .padding(.horizontal, 6)
+                                        .padding(.vertical, 2)
+                                        .background(Brand.primary.opacity(0.12), in: Capsule())
+                                }
+                            }
                         }
                     }
                 }
@@ -250,7 +260,7 @@ struct LearnedPatternsView: View {
         } header: {
             Text("Channel AI guidance documents")
         } footer: {
-            Text("Expand a channel to view or edit its guidance. Only one channel can be edited at a time.")
+            Text("Channels marked Learned contain automatic or manual guidance. A triage action may make no change when the current prompts already cover it.")
         }
     }
 

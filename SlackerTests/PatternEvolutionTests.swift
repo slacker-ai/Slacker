@@ -744,9 +744,15 @@ final class PatternEvolutionServiceTests: XCTestCase {
     }
 
     /// Insert a backing message so the triaged ts resolves to text.
-    private func seedMessage(_ db: AppDatabase, ts: String, text: String, reactionsJSON: String? = nil) throws {
+    private func seedMessage(
+        _ db: AppDatabase,
+        channelID: String = "C1",
+        ts: String,
+        text: String,
+        reactionsJSON: String? = nil
+    ) throws {
         try db.dbWriter.write { dbc in
-            try Message(channelID: "C1", ts: ts, threadTS: ts, userID: "U1",
+            try Message(channelID: channelID, ts: ts, threadTS: ts, userID: "U1",
                         text: text, reactionsJSON: reactionsJSON,
                         ingestedAt: Date(timeIntervalSince1970: 1)).insert(dbc)
         }
@@ -834,6 +840,46 @@ final class PatternEvolutionServiceTests: XCTestCase {
         }
         XCTAssertEqual(guidance.count, 1)
         XCTAssertEqual(guidance.first?.status, .approved)
+    }
+
+    func testMatchingDismissalInAnotherChannelIsPresentedAsGlobalEvidence() async throws {
+        let db = try makeDB()
+        try await db.dbWriter.write { dbc in
+            try Channel(
+                id: "C2",
+                workspaceID: "T1",
+                name: "other-team",
+                isPrivate: false,
+                isWatched: true
+            ).insert(dbc)
+            try TriageLabel(
+                id: "cross-channel-label",
+                itemID: nil,
+                messageTS: "2",
+                channelID: "C2",
+                userVerdict: .ignore,
+                source: .dismissal,
+                createdAt: Date(timeIntervalSince1970: 2)
+            ).insert(dbc)
+        }
+        try seedMessage(db, channelID: "C1", ts: "1", text: "Can someone share today's client meeting?")
+        try seedMessage(db, channelID: "C2", ts: "2", text: "  CAN someone share today's   client meeting? ")
+        let stub = EvolutionStubLLM(
+            response: #"{"phrases":[],"globalGuidance":"","channelGuidance":""}"#
+        )
+
+        await service(db, llm: stub).evolveFromTriage(
+            channelID: "C1",
+            messageTS: "1",
+            verdict: .ignore,
+            source: .dismissal
+        )
+
+        let request = try XCTUnwrap(stub.lastRequest)
+        XCTAssertTrue(request.system.contains("behavior belongs in globalGuidance"))
+        XCTAssertTrue(request.user.contains("MATCHING USER FEEDBACK IN OTHER CHANNELS"))
+        XCTAssertTrue(request.user.contains("[#other-team]"))
+        XCTAssertTrue(request.user.contains("CAN someone share today's   client meeting"))
     }
 
     func testEvolutionChecksEffectivePromptsAndPendingChangesBeforeProposing() async throws {

@@ -54,15 +54,46 @@ final class MainViewModelTests: XCTestCase {
         let db = try AppDatabase.makeInMemory()
         try seed(db)
         let vm = MainViewModel(database: db)
+        let evolutionStarted = expectation(description: "resolve starts evolution")
+        vm.onTriageLabeled = { channelID, messageTS, verdict, source in
+            XCTAssertEqual(channelID, "C1")
+            XCTAssertEqual(messageTS, "100.0")
+            XCTAssertEqual(verdict, .matters)
+            XCTAssertEqual(source, .markResolved)
+            evolutionStarted.fulfill()
+        }
         await vm.reload()
 
         await vm.resolve(vm.missedFollowups[0])
+        await fulfillment(of: [evolutionStarted], timeout: 1)
 
         XCTAssertEqual(vm.surfacedCount, 0, "resolved item leaves the attention list")
         let state = try await db.dbWriter.read { try Item.fetchOne($0, key: "item-1")?.state }
         XCTAssertEqual(state, .resolved)
         let labels = try await db.dbWriter.read { try TriageLabel.fetchCount($0) }
         XCTAssertEqual(labels, 1, "triage writes a calibration label")
+    }
+
+    func testDismissStartsEvolutionBeforeRemovingRow() async throws {
+        let db = try AppDatabase.makeInMemory()
+        try seed(db)
+        let vm = MainViewModel(database: db)
+        let evolutionStarted = expectation(description: "dismiss starts evolution")
+        vm.onTriageLabeled = { channelID, messageTS, verdict, source in
+            XCTAssertEqual(channelID, "C1")
+            XCTAssertEqual(messageTS, "100.0")
+            XCTAssertEqual(verdict, .ignore)
+            XCTAssertEqual(source, .dismissal)
+            evolutionStarted.fulfill()
+        }
+        await vm.reload()
+
+        await vm.dismiss(vm.missedFollowups[0])
+        await fulfillment(of: [evolutionStarted], timeout: 1)
+
+        XCTAssertEqual(vm.surfacedCount, 0)
+        let state = try await db.dbWriter.read { try Item.fetchOne($0, key: "item-1")?.state }
+        XCTAssertEqual(state, .dismissed)
     }
 
     func testReviewPromoteSurfacesAndLabels() async throws {

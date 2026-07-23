@@ -105,7 +105,6 @@ final class MainViewModel {
             mutate(&item)
             try item.update(db)
         }
-        await reload()
     }
 
     private func fetchRows(states: [ItemState]) async -> [ItemRow] {
