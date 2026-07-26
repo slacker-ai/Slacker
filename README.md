@@ -11,7 +11,7 @@
 <p align="center">
   <a href="LICENSE"><img alt="License: AGPL v3" src="https://img.shields.io/badge/license-AGPL--3.0-blue"></a>
   <img alt="Platform: macOS" src="https://img.shields.io/badge/platform-macOS-lightgrey">
-  <img alt="Version: 1.0.0" src="https://img.shields.io/badge/release-v1.0.0-blue">
+  <img alt="Version: 1.1.0" src="https://img.shields.io/badge/release-v1.1.0-blue">
 </p>
 
 <p align="center">
@@ -70,7 +70,7 @@ You create your own Slack app from a manifest in this repo. No shared OAuth app
 or third-party server receives a token for your workspace.
 
 ## Intall Binary
-Install the newest release [here](https://github.com/slacker-ai/Slacker/releases/latest/download/Slacker.dmg)
+Install the newest release [[here](https://github.com/slacker-ai/Slacker/releases/download/v1.1.0/Slacker.dmg)
 
 ## Quick Start
 
