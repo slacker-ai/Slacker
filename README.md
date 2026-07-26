@@ -1,12 +1,11 @@
 <p align="center">
-  <img src="logo.png" alt="Slacker logo" width="160">
+  <a href="https://www.youtube.com/watch?v=XZ6wfB3QBmo">
+    <img src="https://i.ytimg.com/vi/XZ6wfB3QBmo/hqdefault.jpg" alt="Watch the Slacker demo" width="600">
+  </a>
+  <br>
+  <a href="https://www.youtube.com/watch?v=XZ6wfB3QBmo"><strong>Watch the Slacker demo</strong></a>
 </p>
 
-<h1 align="center">Slacker</h1>
-
-<p align="center">
-  Local-first Slack catch-up for macOS.
-</p>
 
 <p align="center">
   <a href="LICENSE"><img alt="License: AGPL v3" src="https://img.shields.io/badge/license-AGPL--3.0-blue"></a>
@@ -14,12 +13,10 @@
   <img alt="Version: 1.1.0" src="https://img.shields.io/badge/release-v1.1.0-blue">
 </p>
 
+<h1 align="center">Slacker</h1>
+
 <p align="center">
-  <a href="https://www.youtube.com/watch?v=XZ6wfB3QBmo">
-    <img src="https://i.ytimg.com/vi/XZ6wfB3QBmo/hqdefault.jpg" alt="Watch the Slacker demo" width="600">
-  </a>
-  <br>
-  <a href="https://www.youtube.com/watch?v=XZ6wfB3QBmo"><strong>Watch the Slacker demo</strong></a>
+  Local-first Slack catch-up for macOS.
 </p>
 
 Slacker is a self-evolving, local-first macOS app that surfaces the Slack
