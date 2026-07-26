@@ -131,8 +131,6 @@ final class AppRoot {
         }
         let summaryService = summary
         let threadSummaries = ItemThreadSummaryService(database: db, llm: llmClient, patternStore: patternStore)
-        let evolution = PatternEvolutionService(database: db, llm: llmClient, store: patternStore)
-
         let coordinator = SyncCoordinator(
             ingestion: ingestion,
             database: db,
@@ -183,12 +181,11 @@ final class AppRoot {
         // Every explicit user action immediately learns approved phrases/guidance in the
         // background. The action itself never waits for the model.
         mainViewModel?.onTriageLabeled = { [weak self] channelID, messageTS, verdict, source in
-            // Read the live settings model, not the debounced database copy. Otherwise a
-            // triage click immediately after enabling evolution can be silently skipped.
-            let enabled = await MainActor.run {
-                self?.settingsModel?.settings.selfEvolutionEnabled ?? true
+            // Resolve the live AI configuration for every action. Settings autosave is
+            // debounced, and the provider may have changed since sync started.
+            guard let evolution = await self?.currentEvolutionService(store: patternStore) else {
+                return
             }
-            guard enabled else { return }
 
             await evolution.evolveFromTriage(channelID: channelID, messageTS: messageTS, verdict: verdict, source: source)
             await self?.settingsModel?.learnedPatternsModel.load()
@@ -229,6 +226,32 @@ final class AppRoot {
         workspaceID: String
     ) {
         settingsModel?.setSocketState(state, workspaceID: workspaceID)
+    }
+
+    private func currentEvolutionService(store: PatternStore) -> PatternEvolutionService? {
+        guard let settingsModel, settingsModel.settings.selfEvolutionEnabled else { return nil }
+        return Self.makeEvolutionService(
+            database: database,
+            store: store,
+            settings: settingsModel.settings,
+            apiKey: settingsModel.apiKey
+        )
+    }
+
+    /// Kept separate so the click-time provider resolution has direct regression coverage.
+    static func makeEvolutionService(
+        database: AppDatabase,
+        store: PatternStore,
+        settings: AppSettings,
+        apiKey: String?
+    ) -> PatternEvolutionService? {
+        do {
+            let llm = try LLMClientFactory.make(settings: settings, apiKey: apiKey)
+            return PatternEvolutionService(database: database, llm: llm, store: store)
+        } catch {
+            Log.info("Per-action evolution skipped: AI provider is not configured (\(error)).")
+            return nil
+        }
     }
 
 }

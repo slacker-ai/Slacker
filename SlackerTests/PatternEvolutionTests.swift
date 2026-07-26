@@ -730,6 +730,32 @@ final class LearnedPatternsModelTests: XCTestCase {
     }
 }
 
+@MainActor
+final class EvolutionConfigurationTests: XCTestCase {
+    func testEvolutionServiceUsesCurrentSettingsInsteadOfStartupConfiguration() throws {
+        let db = try AppDatabase.makeInMemory()
+        let store = PatternStore(database: db)
+        var settings = AppSettings()
+        settings.llmProvider = .openAI
+
+        XCTAssertNil(AppRoot.makeEvolutionService(
+            database: db,
+            store: store,
+            settings: settings,
+            apiKey: nil
+        ))
+
+        settings.llmProvider = .ollama
+        settings.llmBaseURL = "http://localhost:11434"
+        XCTAssertNotNil(AppRoot.makeEvolutionService(
+            database: db,
+            store: store,
+            settings: settings,
+            apiKey: nil
+        ))
+    }
+}
+
 // MARK: - Evolution service (per-triage learning, validation, integration)
 
 final class PatternEvolutionServiceTests: XCTestCase {
