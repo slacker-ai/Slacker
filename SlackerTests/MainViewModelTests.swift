@@ -100,10 +100,19 @@ final class MainViewModelTests: XCTestCase {
         let db = try AppDatabase.makeInMemory()
         try seed(db, itemState: .review)
         let vm = MainViewModel(database: db)
+        let evolutionStarted = expectation(description: "This matters starts evolution")
+        vm.onTriageLabeled = { channelID, messageTS, verdict, source in
+            XCTAssertEqual(channelID, "C1")
+            XCTAssertEqual(messageTS, "100.0")
+            XCTAssertEqual(verdict, .matters)
+            XCTAssertEqual(source, .reviewTriage)
+            evolutionStarted.fulfill()
+        }
         await vm.reload()
         XCTAssertEqual(vm.reviewItems.count, 1)
 
         await vm.promote(vm.reviewItems[0])
+        await fulfillment(of: [evolutionStarted], timeout: 1)
 
         let state = try await db.dbWriter.read { try Item.fetchOne($0, key: "item-1")?.state }
         XCTAssertEqual(state, .surfaced)
